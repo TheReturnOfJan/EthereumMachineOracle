@@ -97,21 +97,21 @@ class Challenger {
 
     }
 
-    async getCommitmentRoot(treeType: boolean): Promise<Bytes32> {
+    async getCommitmentRoot(treeType: boolean = true): Promise<Bytes32> {
         if (!this.treeCorrect) await this.init();
 
         const root = treeType ? this.treeCorrect.root : this.treeIncorrect.root;
         return root;
     }
 
-    async getDisagreementNode(treeType: boolean, currentDepth: number, disagreementPoint: number): Promise<Node> {
+    async getDisagreementNode(currentDepth: number, disagreementPoint: number, treeType: boolean = true): Promise<Node> {
       if (!this.treeCorrect) await this.init();
 
       const node = treeType ? this.treeCorrect.getNodeByParent(currentDepth, disagreementPoint) : this.treeIncorrect.getNodeByParent(currentDepth, disagreementPoint);
       return node;
     }
 
-    async getProofByIndex(treeType: boolean, index: number): Promise<Proof> {
+    async getProofByIndex(index: number, treeType: boolean = true): Promise<Proof> {
       if (!this.treeCorrect) await this.init();
       const leaf = treeType ? await this.machineInstance.stateHash(this.listCorrectStates[index]) : await this.machineInstance.stateHash(this.listCorrectStates[index]);
       const proofElements = treeType ? this.treeCorrect.createMerkleProof(index) : this.treeIncorrect.createMerkleProof(index);
@@ -122,7 +122,7 @@ class Challenger {
       }
     }
 
-    async finalState(treeType: boolean): Promise<[number, State]> {
+    async finalState(treeType: boolean = true): Promise<[number, State]> {
       if (!this.treeCorrect) await this.init();
       const index = treeType ? this.listCorrectStates.length - 1 : this.listIncorrectStates.length - 1;
       const state = treeType ? this.listCorrectStates[index] : this.listIncorrectStates[index];
@@ -130,6 +130,12 @@ class Challenger {
         index,
         state
       ]
+    }
+
+    async getStateByIndex(index: number, treeType: boolean = true): Promise<State> {
+      if (!this.treeCorrect) await this.init();
+      const state = treeType ? this.listCorrectStates[index] : this.listIncorrectStates[index];
+      return state;
     }
 
 }

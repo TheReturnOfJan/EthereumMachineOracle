@@ -40,7 +40,7 @@ contract("EMO", async accounts => {
   it("First interection - testing clients claim function", async () => {
     const image = await offchainRunnerInstance.run(seed);
     const imageHash = await offchainRunnerInstance.imageHash(image);
-    const correctCommitmentRoot = await challenger.getCommitmentRoot(true);
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
     const incorrectCommitmentRoot = await challenger.getCommitmentRoot(false);
     const initialStateHash = await offchainRunnerInstance.stateHash(await offchainRunnerInstance.create(seed));
 
@@ -71,7 +71,7 @@ contract("EMO", async accounts => {
     const image = await offchainRunnerInstance.run(seed);
     const imageHash = await offchainRunnerInstance.imageHash(image);
     const initialStateHash = await offchainRunnerInstance.stateHash(await offchainRunnerInstance.create(seed));
-    const correctCommitmentRoot = await challenger.getCommitmentRoot(true);
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
     let tx = await client.makeClaim(seed, image, correctCommitmentRoot, {value: stake});
     try {
       tx = await verifier.resolveTrueClaim(correctCommitmentRoot);
@@ -106,7 +106,7 @@ contract("EMO", async accounts => {
     const imageHash = await challenger.computeImageHash(image);
     const initialStateHash = await challenger.computeInitialStateHash(seed);
 
-    const correctCommitmentRoot = await challenger.getCommitmentRoot(true);
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
     let disagreementPoint = 0;
     let disputeDepth = 0;
 
@@ -118,7 +118,7 @@ contract("EMO", async accounts => {
     let defendandTx = await client.makeClaim(seed, image, correctCommitmentRoot, {from: defender, value: stake});
 
     // Starting dispute
-    let prosecutorNode = await challenger.getDisagreementNode(false, disputeDepth, disagreementPoint); // the start point is always 0, 0 - it's rootNode
+    let prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false); // the start point is always 0, 0 - it's rootNode
 
     // Step1. prosecutor calls newDispute with args: defendantRoot and prosecutorNode
     let actionTimestamp;
@@ -133,11 +133,11 @@ contract("EMO", async accounts => {
 
     // Step2. defendant calls reveal with args: prosecutorRoot, defendantNode, proofLeft, proofRight, finalState
     // PS. defendant should listen for NewDispute events and check if there is sense to defend claim
-    let defendantNode = await challenger.getDisagreementNode(true, disputeDepth, disagreementPoint); // it's 0, 0 - rootNode
-    let proofLeft = await challenger.getProofByIndex(true, 0);
-    const finalStateIndex = challenger.listCorrectStates.length - 1;
-    let proofRight = await challenger.getProofByIndex(true, finalStateIndex);
-    let finalState = challenger.listCorrectStates[finalStateIndex];
+    let defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint); // it's 0, 0 - rootNode
+    let proofLeft = await challenger.getProofByIndex(0);
+    const finalStateIndex = (await challenger.finalState())[0];
+    let proofRight = await challenger.getProofByIndex(finalStateIndex);
+    let finalState = (await challenger.finalState())[1];
 
     defendandTx = await falsifier.reveal(prosecutorRoot, defendantNode, proofLeft, proofRight, finalState, {from: defender});
     let goRight = _goRight(prosecutorNode, defendantNode);
@@ -160,7 +160,7 @@ contract("EMO", async accounts => {
     for (let i = 0; i < DEFAULT_MAX_TREE_DEPTH - 2; i++) {
       //Step3. prosecutor calls prosecutorRespond with args: prosecutorRoot, prosecutorNode(next level, before calling check the dispute.goRight to define left or right node to use)
       //PS. prosector should listen for Reveal event and also checks the timeout if the event doesn't appear in the blockchain
-      prosecutorNode = await challenger.getDisagreementNode(false, disputeDepth, disagreementPoint)
+      prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
       prosecutorTx = await falsifier.prosecutorRespond(prosecutorRoot, prosecutorNode, {from: prosecutor});
       // TODO ClaimFalsifier add event to prosecutorRespond function so defendant is able to listen and respond
 
@@ -173,7 +173,7 @@ contract("EMO", async accounts => {
 
       //Step4. defendant calls defendantRespond with args: prosecutorRoot, defendantNode
       //PS. there is the only way for defendant to call dispute and check dispute.state if it is his turn to action - have an event instead
-      defendantNode = await challenger.getDisagreementNode(true, disputeDepth, disagreementPoint);
+      defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
       defendandTx = await falsifier.defendantRespond(prosecutorRoot, defendantNode, {from: defender});
       // update
       goRight = _goRight(prosecutorNode, defendantNode);
@@ -193,7 +193,7 @@ contract("EMO", async accounts => {
     }
 
     //Step5. prosecutor respond last time
-    prosecutorNode = await challenger.getDisagreementNode(false, disputeDepth, disagreementPoint);
+    prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
     prosecutorTx = await falsifier.prosecutorRespond(prosecutorRoot, prosecutorNode, {from: prosecutor});
 
     // Check ClaimFalsifier state changes
@@ -204,7 +204,7 @@ contract("EMO", async accounts => {
     assert.equal(dispute.state, 3, "should be 'DefendantTurn'.");
 
     //Step6. defendant respond last time
-    defendantNode = await challenger.getDisagreementNode(true, disputeDepth, disagreementPoint);
+    defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
     defendandTx = await falsifier.defendantRespond(prosecutorRoot, defendantNode, {from: defender});
     // update
     goRight = _goRight(prosecutorNode, defendantNode);
@@ -224,8 +224,8 @@ contract("EMO", async accounts => {
     assert.equal(dispute.state, 4, "should be 'Bottom'.");
 
     // Step7. defendant reveals bottom and wins dispute
-    const proof = await challenger.getProofByIndex(true, disagreementPoint - 1);
-    const defendantStateBeforeDisagreementPoint = challenger.listCorrectStates[disagreementPoint - 1];
+    const proof = await challenger.getProofByIndex(disagreementPoint - 1);
+    const defendantStateBeforeDisagreementPoint = await challenger.getStateByIndex(disagreementPoint - 1);
 
     // Balances before revealing bottom
     let defenderBalanceBefore = await web3.eth.getBalance(defender);
@@ -287,7 +287,7 @@ contract("EMO", async accounts => {
     const image = await challenger.getIncorrectImage(); // probably put seed as a parameter
     const imageHash = await challenger.computeImageHash(image);
     const initialStateHash = await challenger.computeInitialStateHash(seed);
-    const correctCommitmentRoot = await challenger.getCommitmentRoot(true);
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
     let disagreementPoint = 0;
     let disputeDepth = 0;
 
@@ -296,7 +296,7 @@ contract("EMO", async accounts => {
     const prosecutor = accounts[2];
     let defendandTx = await client.makeClaim(seed, image, defendantRoot, {from: defender, value: stake});
     // Starting dispute
-    let prosecutorNode = await challenger.getDisagreementNode(true, disputeDepth, disagreementPoint);
+    let prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
     // Step1. prosecutor calls newDispute with args: defendantRoot and prosecutorNode
     // PS. prosector should listen for NewClaim events and compute and check results to decide to open the dispute
     let actionTimestamp;
@@ -311,11 +311,11 @@ contract("EMO", async accounts => {
 
     // Step2. defendant calls reveal with args: prosecutorRoot, defendantNode, proofLeft, proofRight, finalState
     // PS. defendant should listen for NewDispute events and check if there is sense to defend claim
-    let defendantNode = await challenger.getDisagreementNode(false, disputeDepth, disagreementPoint);
-    let proofLeft = await challenger.getProofByIndex(false, 0);
-    const finalStateIndex = challenger.listIncorrectStates.length - 1;
-    let proofRight = await challenger.getProofByIndex(false, finalStateIndex);
-    const finalState = challenger.listIncorrectStates[finalStateIndex];
+    let defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
+    let proofLeft = await challenger.getProofByIndex(0, false);
+    const finalStateIndex = (await challenger.finalState(false))[0];
+    let proofRight = await challenger.getProofByIndex(finalStateIndex, false);
+    const finalState = (await challenger.finalState(false))[1];
 
     defendandTx = await falsifier.reveal(correctCommitmentRoot, defendantNode, proofLeft, proofRight, finalState, {from: defender});
     // update
@@ -339,7 +339,7 @@ contract("EMO", async accounts => {
     for (let i = 0; i < DEFAULT_MAX_TREE_DEPTH - 2; i++) {
       //Step3. prosecutor calls prosecutorRespond with args: prosecutorRoot, prosecutorNode(next level, before calling check the dispute.goRight to define left or right node to use)
       //PS. prosector should listen for Reveal event and also checks the timeout if the event doesn't appear in the
-      prosecutorNode = await challenger.getDisagreementNode(true, disputeDepth, disagreementPoint);
+      prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
       prosecutorTx = await falsifier.prosecutorRespond(correctCommitmentRoot, prosecutorNode, {from: prosecutor});
       // TODO ClaimFalsifier add event to prosecutorRespond function so defendant is able to listen and respond
 
@@ -352,7 +352,7 @@ contract("EMO", async accounts => {
 
       //Step4. defendant calls defendantRespond with args: prosecutorRoot, defendantNode
       //PS. there is the only way for defendant to call dispute and check dispute.state if it is his turn to action
-      defendantNode = await challenger.getDisagreementNode(false, disputeDepth, disagreementPoint);
+      defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
       defendandTx = await falsifier.defendantRespond(correctCommitmentRoot, defendantNode, {from: defender});
       // update
       goRight = _goRight(prosecutorNode, defendantNode);
@@ -372,7 +372,7 @@ contract("EMO", async accounts => {
     }
 
     //Step5. prosecutor respond last time
-    prosecutorNode = await challenger.getDisagreementNode(true, disputeDepth, disagreementPoint);
+    prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
     prosecutorTx = await falsifier.prosecutorRespond(correctCommitmentRoot, prosecutorNode, {from: prosecutor});
 
     // Check ClaimFalsifier state changes
@@ -383,7 +383,7 @@ contract("EMO", async accounts => {
     assert.equal(dispute.state, 3, "should be 'DefendantTurn'.");
 
     //Step6. defendant respond last time
-    defendantNode = await challenger.getDisagreementNode(false, disputeDepth, disagreementPoint);
+    defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
     defendandTx = await falsifier.defendantRespond(correctCommitmentRoot, defendantNode, {from: defender});
     // update
     goRight = _goRight(prosecutorNode, defendantNode);
@@ -403,8 +403,8 @@ contract("EMO", async accounts => {
     assert.equal(dispute.state, 4, "should be 'Bottom'.");
 
     // Step7. defendant reveals bottom (but as the claim was incorrect he is not able to do it)
-    const proof = await challenger.getProofByIndex(false, disagreementPoint - 1);
-    const defendantStateBeforeDisagreementPoint = challenger.listIncorrectStates[disagreementPoint - 1];
+    const proof = await challenger.getProofByIndex(disagreementPoint - 1, false);
+    const defendantStateBeforeDisagreementPoint = await challenger.getStateByIndex(disagreementPoint - 1, false);
     try {
       defendandTx = await falsifier.defendantRevealBottom(correctCommitmentRoot, proof, defendantStateBeforeDisagreementPoint, {from: defender});
     } catch (e) {
@@ -461,13 +461,13 @@ contract("EMO", async accounts => {
     let disputeDepth = 0;
 
     const defendantRoot = await challenger.getCommitmentRoot(false);
-    const correctCommitmentRoot = await challenger.getCommitmentRoot(true);
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
 
     let defendandTx = await client.makeClaim(seed, image, defendantRoot, {value: stake});
     // Starting dispute
     const prosecutor = accounts[2];
     const defender = accounts[1];
-    let prosecutorNode = await challenger.getDisagreementNode(true, disputeDepth, disagreementPoint);
+    let prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
     // Step1. prosecutor calls newDispute with args: defendantRoot and prosecutorNode
     let prosecutorTx = await falsifier.newDispute(defendantRoot, prosecutorNode, {from: prosecutor, value: stake});
     // Check logs
@@ -482,11 +482,11 @@ contract("EMO", async accounts => {
 
     // Step2. defendant calls reveal with args: prosecutorRoot, defendantNode, proofLeft, proofRight,
     // NEXT STEP calculate proofs and state values for correct computation result
-    let defendantNode = await challenger.getDisagreementNode(false, disputeDepth, disagreementPoint);
-    let proofLeft = await challenger.getProofByIndex(true, 0);
-    let finalStateIndex = challenger.listCorrectStates.length - 1;
-    let proofRight = await challenger.getProofByIndex(true, finalStateIndex);
-    let finalState = challenger.listCorrectStates[finalStateIndex];
+    let defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
+    let proofLeft = await challenger.getProofByIndex(0);
+    let finalStateIndex = (await challenger.finalState())[0];
+    let proofRight = await challenger.getProofByIndex(finalStateIndex);
+    let finalState = (await challenger.finalState())[1];
     try {
       defendandTx = await falsifier.reveal(correctCommitmentRoot, defendantNode, proofLeft, proofRight, finalState, {from: defender});
     } catch (e) {
@@ -498,13 +498,13 @@ contract("EMO", async accounts => {
     const image = await offchainRunnerInstance.project(challenger.listCorrectStates[Math.floor(challenger.listCorrectStates.length / 2 - 1)]);
     const imageHash = await offchainRunnerInstance.imageHash(image);
     let initialStateHash = await offchainRunnerInstance.stateHash(await offchainRunnerInstance.create(seed));
-    const correctCommitmentRoot = await challenger.getCommitmentRoot(true);
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
 
     let tx = await client.makeClaim(seed, image, correctCommitmentRoot, {value: stake});
     // Starting dispute
     let prosecutor = accounts[2];
     let defender = accounts[1];
-    let prosecutorNode = await challenger.getDisagreementNode(true, 0, 0);
+    let prosecutorNode = await challenger.getDisagreementNode(0, 0);
     // Step1. prosecutor calls newDispute with args: defendantRoot and prosecutorNode
     let prosecutorTx = await falsifier.newDispute(correctCommitmentRoot, prosecutorNode, {from: prosecutor, value: stake});
     // Check logs
@@ -519,10 +519,10 @@ contract("EMO", async accounts => {
 
     // Step2. defendant calls reveal with args: prosecutorRoot, defendantNode, proofLeft, proofRight, finalState
     // NEXT STEP calculate correct proofs and state values
-    const proofLeft = await challenger.getProofByIndex(true, 0);
-    const finalStateIndex = challenger.listCorrectStates.length - 1;
-    const proofRight = await challenger.getProofByIndex(true, finalStateIndex);
-    let finalState = challenger.listCorrectStates[finalStateIndex];
+    const proofLeft = await challenger.getProofByIndex(0);
+    const finalStateIndex = (await challenger.finalState())[0];
+    const proofRight = await challenger.getProofByIndex(finalStateIndex);
+    let finalState = (await challenger.finalState())[1];
     try {
       let defendandTx = await falsifier.reveal(correctCommitmentRoot, prosecutorNode, proofLeft, proofRight, finalState, {from: defender});
 

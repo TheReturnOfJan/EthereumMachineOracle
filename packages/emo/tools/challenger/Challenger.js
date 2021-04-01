@@ -190,6 +190,7 @@ var Challenger = /** @class */ (function () {
         });
     };
     Challenger.prototype.getCommitmentRoot = function (treeType) {
+        if (treeType === void 0) { treeType = true; }
         return __awaiter(this, void 0, void 0, function () {
             var root;
             return __generator(this, function (_a) {
@@ -207,7 +208,8 @@ var Challenger = /** @class */ (function () {
             });
         });
     };
-    Challenger.prototype.getDisagreementNode = function (treeType, currentDepth, disagreementPoint) {
+    Challenger.prototype.getDisagreementNode = function (currentDepth, disagreementPoint, treeType) {
+        if (treeType === void 0) { treeType = true; }
         return __awaiter(this, void 0, void 0, function () {
             var node;
             return __generator(this, function (_a) {
@@ -225,7 +227,8 @@ var Challenger = /** @class */ (function () {
             });
         });
     };
-    Challenger.prototype.getProofByIndex = function (treeType, index) {
+    Challenger.prototype.getProofByIndex = function (index, treeType) {
+        if (treeType === void 0) { treeType = true; }
         return __awaiter(this, void 0, void 0, function () {
             var leaf, _a, proofElements;
             return __generator(this, function (_b) {
@@ -259,6 +262,7 @@ var Challenger = /** @class */ (function () {
         });
     };
     Challenger.prototype.finalState = function (treeType) {
+        if (treeType === void 0) { treeType = true; }
         return __awaiter(this, void 0, void 0, function () {
             var index, state;
             return __generator(this, function (_a) {
@@ -276,6 +280,25 @@ var Challenger = /** @class */ (function () {
                                 index,
                                 state
                             ]];
+                }
+            });
+        });
+    };
+    Challenger.prototype.getStateByIndex = function (index, treeType) {
+        if (treeType === void 0) { treeType = true; }
+        return __awaiter(this, void 0, void 0, function () {
+            var state;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        if (!!this.treeCorrect) return [3 /*break*/, 2];
+                        return [4 /*yield*/, this.init()];
+                    case 1:
+                        _a.sent();
+                        _a.label = 2;
+                    case 2:
+                        state = treeType ? this.listCorrectStates[index] : this.listIncorrectStates[index];
+                        return [2 /*return*/, state];
                 }
             });
         });
