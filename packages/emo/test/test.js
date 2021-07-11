@@ -203,35 +203,39 @@ contract("EMO", async accounts => {
     actionTimestamp = dispute.lastActionTimestamp;
     assert.equal(dispute.state, 3, "should be 'DefendantTurn'.");
 
-    //Step6. defendant respond last time
+    // Balances before winning dispute
+    let defenderBalanceBefore = await web3.eth.getBalance(defender);
+    let falsifierBalanceBefore = await web3.eth.getBalance(falsifier.address);
+
+    //Step6. defendant respond last time (in some cases it's enough for _defendantWins call execution)
     defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
     defendandTx = await falsifier.defendantRespond(prosecutorRoot, defendantNode, {from: defender});
     // update
     goRight = _goRight(prosecutorNode, defendantNode);
     disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
     disputeDepth++;
+
     // TODO ClaimFalsifier add event to defendantRespond function so prosecutor is able to listen and respond
 
-    // Check ClaimFalsifier state changes
-    dispute = await falsifier.getDispute(prosecutorRoot);
-    assert.deepEqual(dispute.defendantNode, arraifyAsEthers(defendantNode), "defendantNode should be changed.");
-    //assert(dispute.lastActionTimestamp > actionTimestamp, "timestamp should be updated.");
-    actionTimestamp = dispute.lastActionTimestamp;
-    assert.equal(dispute.goRight, goRight, "left nodes of the prosecutor and defendant nodes should be equal.");
-    assert.equal(dispute.firstDivergentStateHash, goRight ? defendantNode.right : defendantNode.left, "The divergent state hash.");
-    assert.equal(dispute.disagreementPoint, disagreementPoint, "Last disagreementPoint update.");
-    assert.equal(dispute.depth, DEFAULT_MAX_TREE_DEPTH, "We reached the bottom. The depth should be equal MAX_TREE_DEPTH.");
-    assert.equal(dispute.state, 4, "should be 'Bottom'.");
+    if (disagreementPoint !== 0 && disagreementPoint <= finalStateIndex) {
+      // Check ClaimFalsifier state changes
+      dispute = await falsifier.getDispute(prosecutorRoot);
+      assert.deepEqual(dispute.defendantNode, arraifyAsEthers(defendantNode), "defendantNode should be changed.");
+      //assert(dispute.lastActionTimestamp > actionTimestamp, "timestamp should be updated.");
+      actionTimestamp = dispute.lastActionTimestamp;
+      assert.equal(dispute.goRight, goRight, "left nodes of the prosecutor and defendant nodes should be equal.");
+      assert.equal(dispute.firstDivergentStateHash, goRight ? defendantNode.right : defendantNode.left, "The divergent state hash.");
+      assert.equal(dispute.disagreementPoint, disagreementPoint, "Last disagreementPoint update.");
+      assert.equal(dispute.depth, DEFAULT_MAX_TREE_DEPTH, "We reached the bottom. The depth should be equal MAX_TREE_DEPTH.");
+      assert.equal(dispute.state, 4, "should be 'Bottom'.");
 
-    // Step7. defendant reveals bottom and wins dispute
-    const proof = await challenger.getProofByIndex(disagreementPoint - 1);
-    const defendantStateBeforeDisagreementPoint = await challenger.getStateByIndex(disagreementPoint - 1);
+      // Step7. defendant reveals bottom and wins dispute
+      const proof = await challenger.getProofByIndex(disagreementPoint - 1);
+      const defendantStateBeforeDisagreementPoint = await challenger.getStateByIndex(disagreementPoint - 1);
 
-    // Balances before revealing bottom
-    let defenderBalanceBefore = await web3.eth.getBalance(defender);
-    let falsifierBalanceBefore = await web3.eth.getBalance(falsifier.address);
+      defendandTx = await falsifier.defendantRevealBottom(prosecutorRoot, proof, defendantStateBeforeDisagreementPoint, {from: defender});
 
-    defendandTx = await falsifier.defendantRevealBottom(prosecutorRoot, proof, defendantStateBeforeDisagreementPoint, {from: defender});
+    }
 
     // Check dispute was deleted
     dispute = await falsifier.getDispute(prosecutorRoot);

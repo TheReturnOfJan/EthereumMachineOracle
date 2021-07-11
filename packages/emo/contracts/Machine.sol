@@ -1,10 +1,10 @@
-pragma solidity >=0.5.0;
-pragma experimental ABIEncoderV2;
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.4;
 
 
 // Solidity does not allow empty stutcts, hence the temporary bool values.
 library Machine {
-  
+
   struct State {
     bytes32[] temp;
   }
@@ -30,7 +30,7 @@ library Machine {
     pure
     returns (Image memory)
   {
-  
+
   }
 
   function isTerminal(State memory _state)

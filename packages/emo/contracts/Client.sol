@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity >=0.6.0;
-pragma experimental ABIEncoderV2;
+pragma solidity ^0.8.4;
 
 import "./ClaimVerifier.sol";
 import "./IClient.sol";
@@ -17,6 +16,7 @@ contract Client is IClient {
 
   address owner;
   bool set;
+  uint internal stepTimeout;
   uint public defaultTimeout;
   uint public stake;
 
@@ -24,16 +24,19 @@ contract Client is IClient {
   mapping(bytes32 => Claim) public currClaims; // claimKey => Claim
   mapping(bytes32 => Claim) public verified;   // initialStateHash => Claim
   mapping(bytes32 => Claim) public falsified;  // initialStateHash => Claim
+  mapping(address => uint) internal withdrawalBalances;
 
   event ClaimDefended (
     bytes32 initialStateHash,
     bytes32 claimKey,
     address defendant
   );
-
-  constructor(uint _defaultTimeout) public {
+  
+  // @param _stepTimeout Should not be less than one block time
+  constructor(uint treeDepth, uint _stepTimeout) {
     owner = msg.sender;
-    defaultTimeout = _defaultTimeout;
+    stepTimeout = _stepTimeout;
+    defaultTimeout = (stepTimeout * (treeDepth + 2)) * 3;
   }
 
   modifier onlyClaimVerifier() {
@@ -53,6 +56,10 @@ contract Client is IClient {
     stake = amount;
   }
 
+  function getStepTimeout () override external view returns (uint) {
+    return stepTimeout;
+  }
+
   function makeClaim(Machine.Seed memory seed, Machine.Image memory image, bytes32 commitmentRoot) public payable {
     require(set, "ClaimVerifier is not set yet.");
     require(commitmentRoot != 0x0, "Impossible commitmentRoot.");
@@ -67,9 +74,13 @@ contract Client is IClient {
     bytes32 initialStateHash = claimKeyToInitialStateHash[claimKey];
     verified[initialStateHash] = claim;
     address initiator = claim.initiator;
-    payable(initiator).call{value: stake}("");
+
     delete currClaims[claimKey];
     delete claimKeyToInitialStateHash[claimKey];
+    (bool success, ) = payable(initiator).call{value: stake}("");
+    if (!success) {
+      withdrawalBalances[initiator] += stake;
+    }
   }
 
   function falseCallback(bytes32 claimKey) external override onlyClaimVerifier {
@@ -85,8 +96,17 @@ contract Client is IClient {
     Claim storage claim = currClaims[claimKey];
     bytes32 initialStateHash = claimKeyToInitialStateHash[claimKey];
     address payable defendant = payable(claim.initiator);
-    defendant.call{value: msg.value}("");
+    (bool success, ) = defendant.call{value: msg.value}("");
+    if (!success) {
+      withdrawalBalances[address(defendant)] += msg.value;
+    }
     emit ClaimDefended(initialStateHash, claimKey, defendant);
+  }
+
+  function withdraw() public {
+    uint amount = withdrawalBalances[msg.sender];
+    withdrawalBalances[msg.sender] = 0;
+    payable(msg.sender).transfer(amount);
   }
 
   function _registerClaim(Machine.Seed memory seed, Machine.Image memory image, bytes32 commitmentRoot, address _initiator) internal {

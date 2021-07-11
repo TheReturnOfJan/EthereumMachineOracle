@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0
-pragma solidity >=0.6.0;
-pragma experimental ABIEncoderV2;
+pragma solidity ^0.8.4;
 
 import "./Machine.sol";
 import "./IClient.sol";
@@ -36,6 +35,8 @@ interface IClaimVerifier {
 
   function getClient () external view returns (IClient);
 
+  function getMachineBytecode () external view returns (bytes memory);
+
   function getClaim (
     bytes32 claimKey
   ) external view returns (Claim memory);
@@ -64,16 +65,23 @@ contract ClaimVerifier is IClaimVerifier {
 
   address public CLAIM_FALSIFIER;
   IClient public CLIENT;
+  uint public MIN_TIMEOUT;
 
-  constructor(address claimFalsifier, address client) public
+  constructor(address claimFalsifier, address client, uint min_timeout)
   {
     CLAIM_FALSIFIER = claimFalsifier;
     CLIENT = IClient(client);
+    MIN_TIMEOUT = min_timeout;
   }
 
   function getClient () override external view returns (IClient)
   {
     return CLIENT;
+  }
+
+  function getMachineBytecode () override external pure returns (bytes memory)
+  {
+    return type(Machine).creationCode;
   }
 
   function getClaim (
@@ -95,7 +103,7 @@ contract ClaimVerifier is IClaimVerifier {
     require(!_claimExists(claimKey), "Claim already exists.");
     require(msg.value > 0, "Stake must be greater than 0.");
     require(msg.sender == address(CLIENT), "Only client can make claims.");
-    require(timeout > 0 && timeout + block.timestamp > timeout, "Timeout must be greater then zero and be in overflow bounds.");
+    require(timeout > 0 && timeout + block.timestamp > timeout && timeout >= MIN_TIMEOUT, "Timeout must be greater then zero and be in overflow bounds.");
 
     bytes32 initialStateHash = Machine.stateHash(Machine.create(seed));
 

@@ -47,7 +47,7 @@ class Challenger {
 
     async getIncorrectImage(): Promise<Image> {
       if (!this.treeCorrect) await this.init();
-      return this.machineInstance.project(this.listIncorrectStates[this.listCorrectStates.length - 1]);
+      return this.machineInstance.project(this.listIncorrectStates[this.listIncorrectStates.length - 1]);
     }
 
     async computeImage(seed: Seed): Promise<Image> {
@@ -73,12 +73,31 @@ class Challenger {
             this.listCorrectStates.push(state);
             isTerminal = await this.machineInstance.isTerminal(state);
         }
-        let index = Math.floor(this.listCorrectStates.length / 2) - 1; // think about different options - lenght = 0, lenght = 1
-        let el1 = this.listCorrectStates[index];
-        let el2 = this.listCorrectStates[index + 1];
-        this.listIncorrectStates = [...this.listCorrectStates];
-        this.listIncorrectStates[index] = el2;
-        this.listIncorrectStates[index + 1] = el1;
+        // think about different options - length = 0, length = 1, think about adjustment of core contracts logic if number of states less than depth that is making challenge game useless
+        // temporary handle low number of computation steps
+        if (this.listCorrectStates.length === 2) {
+          let el1 = this.listCorrectStates[1];
+          this.listIncorrectStates = [...this.listCorrectStates];
+          this.listIncorrectStates.push(el1);
+
+        } else if (this.listCorrectStates.length === 3) {
+          let el1 = this.listCorrectStates[1];
+          let el2 = this.listCorrectStates[2];
+          this.listIncorrectStates = [...this.listCorrectStates];
+          this.listIncorrectStates[1] = el2;
+          this.listIncorrectStates[2] = el1;
+          this.listIncorrectStates.push(el2);
+
+        } else {
+          let index = Math.floor(this.listCorrectStates.length / 2) - 1;
+
+          let el1 = this.listCorrectStates[index];
+          let el2 = this.listCorrectStates[index + 1];
+          this.listIncorrectStates = [...this.listCorrectStates];
+          this.listIncorrectStates[index] = el2;
+          this.listIncorrectStates[index + 1] = el1;
+        }
+
     }
 
     async buildTrees() {
@@ -113,7 +132,7 @@ class Challenger {
 
     async getProofByIndex(index: number, treeType: boolean = true): Promise<Proof> {
       if (!this.treeCorrect) await this.init();
-      const leaf = treeType ? await this.machineInstance.stateHash(this.listCorrectStates[index]) : await this.machineInstance.stateHash(this.listCorrectStates[index]);
+      const leaf = treeType ? await this.machineInstance.stateHash(this.listCorrectStates[index]) : await this.machineInstance.stateHash(this.listIncorrectStates[index]);
       const proofElements = treeType ? this.treeCorrect.createMerkleProof(index) : this.treeIncorrect.createMerkleProof(index);
       return {
         leaf: leaf,

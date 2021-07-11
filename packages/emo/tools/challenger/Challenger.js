@@ -79,7 +79,7 @@ var Challenger = /** @class */ (function () {
                     case 1:
                         _a.sent();
                         _a.label = 2;
-                    case 2: return [2 /*return*/, this.machineInstance.project(this.listIncorrectStates[this.listCorrectStates.length - 1])];
+                    case 2: return [2 /*return*/, this.machineInstance.project(this.listIncorrectStates[this.listIncorrectStates.length - 1])];
                 }
             });
         });
@@ -113,7 +113,7 @@ var Challenger = /** @class */ (function () {
     };
     Challenger.prototype.calcStateLists = function () {
         return __awaiter(this, void 0, void 0, function () {
-            var state, isTerminal, index, el1, el2;
+            var state, isTerminal, el1, el1, el2, index, el1, el2;
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0: return [4 /*yield*/, this.machineInstance.create(this.seed)];
@@ -135,12 +135,29 @@ var Challenger = /** @class */ (function () {
                         isTerminal = _a.sent();
                         return [3 /*break*/, 3];
                     case 6:
-                        index = Math.floor(this.listCorrectStates.length / 2) - 1;
-                        el1 = this.listCorrectStates[index];
-                        el2 = this.listCorrectStates[index + 1];
-                        this.listIncorrectStates = __spreadArrays(this.listCorrectStates);
-                        this.listIncorrectStates[index] = el2;
-                        this.listIncorrectStates[index + 1] = el1;
+                        // think about different options - length = 0, length = 1, think about adjustment of core contracts logic if number of states less than depth that is making challenge game useless
+                        // temporary handle low number of computation steps
+                        if (this.listCorrectStates.length === 2) {
+                            el1 = this.listCorrectStates[1];
+                            this.listIncorrectStates = __spreadArrays(this.listCorrectStates);
+                            this.listIncorrectStates.push(el1);
+                        }
+                        else if (this.listCorrectStates.length === 3) {
+                            el1 = this.listCorrectStates[1];
+                            el2 = this.listCorrectStates[2];
+                            this.listIncorrectStates = __spreadArrays(this.listCorrectStates);
+                            this.listIncorrectStates[1] = el2;
+                            this.listIncorrectStates[2] = el1;
+                            this.listIncorrectStates.push(el2);
+                        }
+                        else {
+                            index = Math.floor(this.listCorrectStates.length / 2) - 1;
+                            el1 = this.listCorrectStates[index];
+                            el2 = this.listCorrectStates[index + 1];
+                            this.listIncorrectStates = __spreadArrays(this.listCorrectStates);
+                            this.listIncorrectStates[index] = el2;
+                            this.listIncorrectStates[index + 1] = el1;
+                        }
                         return [2 /*return*/];
                 }
             });
@@ -245,7 +262,7 @@ var Challenger = /** @class */ (function () {
                     case 3:
                         _a = _b.sent();
                         return [3 /*break*/, 6];
-                    case 4: return [4 /*yield*/, this.machineInstance.stateHash(this.listCorrectStates[index])];
+                    case 4: return [4 /*yield*/, this.machineInstance.stateHash(this.listIncorrectStates[index])];
                     case 5:
                         _a = _b.sent();
                         _b.label = 6;
