@@ -31,12 +31,12 @@ contract Client is IClient {
     bytes32 claimKey,
     address defendant
   );
-  
+
   // @param _stepTimeout Should not be less than one block time
   constructor(uint treeDepth, uint _stepTimeout) {
     owner = msg.sender;
     stepTimeout = _stepTimeout;
-    defaultTimeout = (stepTimeout * (treeDepth + 2)) * 3;
+    defaultTimeout = (stepTimeout * ((treeDepth + 2) * 2)) * 3;
   }
 
   modifier onlyClaimVerifier() {

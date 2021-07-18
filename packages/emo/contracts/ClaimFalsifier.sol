@@ -41,6 +41,22 @@ interface IClaimFalsifier {
     Machine.State finalState
   );
 
+  event ProsecutorResponded (
+    bytes32 prosecutorRoot
+  );
+
+  event DefendantResponded (
+    bytes32 prosecutorRoot
+  );
+
+  event BottomReached (
+    bytes32 prosecutorRoot
+  );
+
+  event DefendantWon (
+    bytes32 prosecutorRoot
+  );
+
   function claimVerifier()
     external view returns (IClaimVerifier);
 
@@ -89,15 +105,13 @@ contract ClaimFalsifier is IClaimFalsifier {
   uint public STAKE_SIZE;
   uint public MAX_TREE_DEPTH;
   uint public STEP_TIMEOUT;
-  uint public DISPUTE_TIMEOUT;
 
   constructor(uint stake_size, uint max_tree_depth, address client)
   {
     STAKE_SIZE = stake_size;
     MAX_TREE_DEPTH = max_tree_depth;
     STEP_TIMEOUT = IClient(client).getStepTimeout();
-    DISPUTE_TIMEOUT = STEP_TIMEOUT * (MAX_TREE_DEPTH + 2);
-    claimVerifier = new ClaimVerifier(address(this), client, DISPUTE_TIMEOUT * 3);
+    claimVerifier = new ClaimVerifier(address(this), client, (STEP_TIMEOUT * ((MAX_TREE_DEPTH + 2) * 2)) * 3);
   }
 
   function getDispute (
@@ -178,7 +192,7 @@ contract ClaimFalsifier is IClaimFalsifier {
     dispute.lastActionTimestamp = block.timestamp;
     dispute.state = DisputeState.DefendantTurn;
 
-    // emit something
+    emit ProsecutorResponded(prosecutorRoot);
   }
 
   function defendantRespond (
@@ -200,15 +214,15 @@ contract ClaimFalsifier is IClaimFalsifier {
     if (_reachedBottom(dispute.depth)) {
       if (dispute.disagreementPoint > dispute.numberOfSteps || dispute.disagreementPoint == 0) {
         _defendantWins(prosecutorRoot);
-        // emit something
+        emit DefendantWon(prosecutorRoot);
       } else {
         dispute.state = DisputeState.Bottom;
         dispute.firstDivergentStateHash = dispute.goRight ? node.right : node.left;
-        //emit something
+        emit BottomReached(prosecutorRoot);
       }
     } else {
       dispute.state = DisputeState.ProsecutorTurn;
-      // emit something
+      emit DefendantResponded(prosecutorRoot);
     }
   }
 
@@ -233,7 +247,7 @@ contract ClaimFalsifier is IClaimFalsifier {
     require(Machine.stateHash(nextState) == dispute.firstDivergentStateHash, "Next computed state is not the one commited to.");
 
     _defendantWins(prosecutorRoot);
-    // emit something
+    emit DefendantWon(prosecutorRoot);
   }
 
   function timeout (
@@ -244,6 +258,7 @@ contract ClaimFalsifier is IClaimFalsifier {
     require(_canTimeout(prosecutorRoot), "This dispute can not be timeout out at this moment");
     if (_defendantWinsOnTimeout(prosecutorRoot)) {
       _defendantWins(prosecutorRoot);
+      emit DefendantWon(prosecutorRoot);
     } else {
       _prosecutorWins(prosecutorRoot);
     }
@@ -306,6 +321,7 @@ contract ClaimFalsifier is IClaimFalsifier {
   ) internal
   {
     Dispute storage dispute = disputes[prosecutorRoot];
+    // TODO: find workaround in a case revert "Claim doesn't exist"
     claimVerifier.falsifyClaim(dispute.defendantRoot, dispute.prosecutor);
     address payable prosecutor = payable(dispute.prosecutor);
     delete disputes[prosecutorRoot];
@@ -317,7 +333,7 @@ contract ClaimFalsifier is IClaimFalsifier {
   ) internal view returns (bool)
   {
     Dispute storage dispute = disputes[prosecutorRoot];
-    return dispute.lastActionTimestamp + STEP_TIMEOUT > block.timestamp;
+    return dispute.lastActionTimestamp + STEP_TIMEOUT <= block.timestamp;
   }
 
   function _defendantWinsOnTimeout (

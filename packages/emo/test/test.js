@@ -9,7 +9,7 @@ const Merkle = artifacts.require('Merkle');
 const ClaimVerifier = artifacts.require('ClaimVerifier');
 const ClaimFalsifier = artifacts.require('ClaimFalsifier');
 const Client = artifacts.require('Client');
-const DEFAULT_TIMEOUT = 60;
+const DEFAULT_STEP_TIMEOUT = 60;
 const DEFAULT_STAKE_SIZE = '0x2c68af0bb140000';
 const DEFAULT_MAX_TREE_DEPTH = 16;
 
@@ -27,7 +27,7 @@ contract("EMO", async accounts => {
   let stake;
 
   beforeEach(async () => {
-      client = await Client.new(DEFAULT_TIMEOUT); // -> this is not client-generic
+      client = await Client.new(DEFAULT_MAX_TREE_DEPTH, DEFAULT_STEP_TIMEOUT); // -> this is not client-generic
       falsifier = await ClaimFalsifier.new(DEFAULT_STAKE_SIZE, DEFAULT_MAX_TREE_DEPTH, client.address);
       let verifierAddress = await falsifier.claimVerifier();
       stake = await falsifier.STAKE_SIZE();
@@ -84,7 +84,17 @@ contract("EMO", async accounts => {
     } catch (e) {
       assert.equal(e.reason, "Claim must exist.", "Incorrect revert reason for resolving true claim.");
     }
-    await increaseTime(DEFAULT_TIMEOUT);
+
+    // Try to resolve while timeout is not expired
+    try {
+      tx = await verifier.resolveTrueClaim(correctCommitmentRoot);
+      console.log("Timing logic is broken");
+    } catch (e) {
+      assert.equal(e.reason, "Too early to resolve.", "Incorrect revert reason.");
+    }
+
+    const min_timeout = await verifier.MIN_TIMEOUT();
+    await increaseTime(parseInt(min_timeout));
     tx = await verifier.resolveTrueClaim(correctCommitmentRoot);
     // Check logs
     assert.equal(tx.logs.length, 1, 'trigger one event'); // Probably we want to test also the case when callback failed and there is second event CallbackFailed
@@ -162,7 +172,7 @@ contract("EMO", async accounts => {
       //PS. prosector should listen for Reveal event and also checks the timeout if the event doesn't appear in the blockchain
       prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
       prosecutorTx = await falsifier.prosecutorRespond(prosecutorRoot, prosecutorNode, {from: prosecutor});
-      // TODO ClaimFalsifier add event to prosecutorRespond function so defendant is able to listen and respond
+      _checkLogsProsecutorRespond(prosecutorTx, prosecutorRoot);
 
       // Check ClaimFalsifier state changes
       dispute = await falsifier.getDispute(prosecutorRoot);
@@ -172,14 +182,13 @@ contract("EMO", async accounts => {
       assert.equal(dispute.state, 3, "should be 'DefendantTurn'.");
 
       //Step4. defendant calls defendantRespond with args: prosecutorRoot, defendantNode
-      //PS. there is the only way for defendant to call dispute and check dispute.state if it is his turn to action - have an event instead
       defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
       defendandTx = await falsifier.defendantRespond(prosecutorRoot, defendantNode, {from: defender});
       // update
       goRight = _goRight(prosecutorNode, defendantNode);
       disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
       disputeDepth++;
-      // TODO ClaimFalsifier add event to defendantRespond function so prosecutor is able to listen and respond
+      _checkLogsDefendantRespond(defendandTx, prosecutorRoot);
 
       // Check ClaimFalsifier state changes
       dispute = await falsifier.getDispute(prosecutorRoot);
@@ -195,6 +204,7 @@ contract("EMO", async accounts => {
     //Step5. prosecutor respond last time
     prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
     prosecutorTx = await falsifier.prosecutorRespond(prosecutorRoot, prosecutorNode, {from: prosecutor});
+    _checkLogsProsecutorRespond(prosecutorTx, prosecutorRoot);
 
     // Check ClaimFalsifier state changes
     dispute = await falsifier.getDispute(prosecutorRoot);
@@ -215,8 +225,6 @@ contract("EMO", async accounts => {
     disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
     disputeDepth++;
 
-    // TODO ClaimFalsifier add event to defendantRespond function so prosecutor is able to listen and respond
-
     if (disagreementPoint !== 0 && disagreementPoint <= finalStateIndex) {
       // Check ClaimFalsifier state changes
       dispute = await falsifier.getDispute(prosecutorRoot);
@@ -229,6 +237,8 @@ contract("EMO", async accounts => {
       assert.equal(dispute.depth, DEFAULT_MAX_TREE_DEPTH, "We reached the bottom. The depth should be equal MAX_TREE_DEPTH.");
       assert.equal(dispute.state, 4, "should be 'Bottom'.");
 
+      _checkLogsBottomReached(defendandTx, prosecutorRoot);
+
       // Step7. defendant reveals bottom and wins dispute
       const proof = await challenger.getProofByIndex(disagreementPoint - 1);
       const defendantStateBeforeDisagreementPoint = await challenger.getStateByIndex(disagreementPoint - 1);
@@ -237,13 +247,15 @@ contract("EMO", async accounts => {
 
     }
 
+    _checkLogsDefendantWon(defendandTx, prosecutorRoot);
+
     // Check dispute was deleted
     dispute = await falsifier.getDispute(prosecutorRoot);
     _checkDisputeRemoved(dispute);
 
     // SHOULD BE REMOVED IT'S CLIENT SPECIFIC LOGS
     // Check logs
-    assert.equal(defendandTx.receipt.rawLogs.length, 1, 'trigger one event');
+    assert.equal(defendandTx.receipt.rawLogs.length, 2, 'trigger two event');
     assert.equal(defendandTx.receipt.rawLogs[0].address, client.address, "Make sure that the event is from Client.");
     assert.equal(defendandTx.receipt.rawLogs[0].topics[0], web3.utils.sha3('ClaimDefended(bytes32,bytes32,address)'), 'Should match the signature of the ClaimDefended event.');
     assert.equal(defendandTx.receipt.rawLogs[0].data, initialStateHash + correctCommitmentRoot.replace('0x', '') + '000000000000000000000000' + defender.replace('0x', '').toLowerCase(), 'data should match.');
@@ -262,10 +274,11 @@ contract("EMO", async accounts => {
 
     // Wait until timeout is over
     let claim = await verifier.getClaim(correctCommitmentRoot);
-    let timeoutPoint = parseInt(claim.timeout) + parseInt(claim.claimTime);
-    let now = Math.floor(Date.now() / 1000);
-    if (now < timeoutPoint) {
-      increaseTime(timeoutPoint - now);
+    const timeoutPoint = parseInt(claim.timeout) + parseInt(claim.claimTime);
+    const blockTimestamp = (await web3.eth.getBlock('latest')).timestamp;
+
+    if (blockTimestamp < timeoutPoint) {
+      await increaseTime(timeoutPoint - blockTimestamp);
     }
     defendandTx = await verifier.resolveTrueClaim(correctCommitmentRoot, {from: defender});
 
@@ -345,7 +358,7 @@ contract("EMO", async accounts => {
       //PS. prosector should listen for Reveal event and also checks the timeout if the event doesn't appear in the
       prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
       prosecutorTx = await falsifier.prosecutorRespond(correctCommitmentRoot, prosecutorNode, {from: prosecutor});
-      // TODO ClaimFalsifier add event to prosecutorRespond function so defendant is able to listen and respond
+      _checkLogsProsecutorRespond(prosecutorTx, correctCommitmentRoot);
 
       // Check ClaimFalsifier state changes
       dispute = await falsifier.getDispute(correctCommitmentRoot);
@@ -355,14 +368,13 @@ contract("EMO", async accounts => {
       assert.equal(dispute.state, 3, "should be 'DefendantTurn'.");
 
       //Step4. defendant calls defendantRespond with args: prosecutorRoot, defendantNode
-      //PS. there is the only way for defendant to call dispute and check dispute.state if it is his turn to action
       defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
       defendandTx = await falsifier.defendantRespond(correctCommitmentRoot, defendantNode, {from: defender});
       // update
       goRight = _goRight(prosecutorNode, defendantNode);
       disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
       disputeDepth++;
-      // TODO ClaimFalsifier add event to defendantRespond function so prosecutor is able to listen and respond
+      _checkLogsDefendantRespond(defendandTx, correctCommitmentRoot);
 
       // Check ClaimFalsifier state changes
       dispute = await falsifier.getDispute(correctCommitmentRoot);
@@ -378,6 +390,7 @@ contract("EMO", async accounts => {
     //Step5. prosecutor respond last time
     prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
     prosecutorTx = await falsifier.prosecutorRespond(correctCommitmentRoot, prosecutorNode, {from: prosecutor});
+    _checkLogsProsecutorRespond(prosecutorTx, correctCommitmentRoot);
 
     // Check ClaimFalsifier state changes
     dispute = await falsifier.getDispute(correctCommitmentRoot);
@@ -393,7 +406,7 @@ contract("EMO", async accounts => {
     goRight = _goRight(prosecutorNode, defendantNode);
     disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
     disputeDepth++;
-    // TODO ClaimFalsifier add event to defendantRespond function so prosecutor is able to listen and respond
+    _checkLogsBottomReached(defendandTx, correctCommitmentRoot);
 
     // Check ClaimFalsifier state changes
     dispute = await falsifier.getDispute(correctCommitmentRoot);
@@ -417,12 +430,10 @@ contract("EMO", async accounts => {
 
     // Step8. prosecutor wins by timeout.
     dispute = await falsifier.getDispute(correctCommitmentRoot);
-    let dRoot = dispute.defendantRoot;
-    let claim = await verifier.getClaim(dRoot);
-    let timeoutPoint = parseInt(claim.timeout) + parseInt(claim.claimTime);
-    let now = Math.floor(Date.now() / 1000);
-    if (now < timeoutPoint) {
-      increaseTime(timeoutPoint - now);
+    const timeoutPoint = parseInt(dispute.lastActionTimestamp) + parseInt(DEFAULT_STEP_TIMEOUT);
+    const blockTimestamp = (await web3.eth.getBlock('latest')).timestamp;
+    if (blockTimestamp < timeoutPoint) {
+      await increaseTime(timeoutPoint - blockTimestamp);
     }
 
     // Balances before falsifying by timeout
@@ -536,6 +547,138 @@ contract("EMO", async accounts => {
 
   });
 
+  it("Testing timing logic - stepTimeout is expired", async () => {
+    // Check all variables
+    const step_timeout = await client.getStepTimeout();
+    const min_timeout = await verifier.MIN_TIMEOUT();
+
+    assert.equal(step_timeout, DEFAULT_STEP_TIMEOUT, "step timeout doesn't match.");
+    assert.equal(min_timeout, (DEFAULT_STEP_TIMEOUT * (DEFAULT_MAX_TREE_DEPTH + 2) * 2 * 3), "min_timeout doesn't match.");
+
+    const image = await challenger.computeImage(seed);
+    const imageHash = await challenger.computeImageHash(image);
+    const initialStateHash = await challenger.computeInitialStateHash(seed);
+
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
+    let disagreementPoint = 0;
+    let disputeDepth = 0;
+
+    const prosecutorRoot = await challenger.getCommitmentRoot(false); // incorrect root
+    let defender = accounts[1];
+    let prosecutor = accounts[2];
+
+    // Make claim
+    let defendandTx = await client.makeClaim(seed, image, correctCommitmentRoot, {from: defender, value: stake});
+
+    // Starting dispute
+    let prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false); // the start point is always 0, 0 - it's rootNode
+
+    // Step1. prosecutor calls newDispute with args: defendantRoot and prosecutorNode
+    let actionTimestamp;
+    let prosecutorTx = await falsifier.newDispute(correctCommitmentRoot, prosecutorNode, {from: prosecutor, value: stake});
+
+    _checkLogsNewDispute(prosecutorTx, correctCommitmentRoot, prosecutorRoot);
+
+    // Check ClaimFalsifier state changes
+    let dispute = await falsifier.getDispute(prosecutorRoot);
+    actionTimestamp = dispute.lastActionTimestamp;
+    _checkClaimFalsifierStateChangesAfterNewDisputeCall(dispute, zeroNode, correctCommitmentRoot, prosecutor, prosecutorNode);
+
+    // Ensure that timeout can not be called while stepTimeout is not expired
+    try {
+      prosecutorTx = await falsifier.timeout(prosecutorRoot, {from: prosecutor});
+      console.log("Timing logic is broken");
+    } catch (e) {
+      assert.equal(e.reason, "This dispute can not be timeout out at this moment", "Wrong reason for timeout");
+    }
+
+    // Imitating defendant doesn't reveal in a time
+    await increaseTime(DEFAULT_STEP_TIMEOUT + 1);
+
+    // Main action. Prosecutor wins dispute by timeout
+
+    // Balances before falsifying by timeout
+    let prosecutorBalanceBefore = await web3.eth.getBalance(prosecutor);
+    let falsifierBalanceBefore = await web3.eth.getBalance(falsifier.address);
+    let verifierBalanceBefore = await web3.eth.getBalance(verifier.address);
+
+    prosecutorTx = await falsifier.timeout(prosecutorRoot, {from: prosecutor});
+
+    // Check logs
+    assert.equal(prosecutorTx.receipt.rawLogs.length, 1, 'trigger one event');
+    assert.equal(prosecutorTx.receipt.rawLogs[0].address, verifier.address, "Make sure that the event is from ClaimVerifier.");
+    assert.equal(prosecutorTx.receipt.rawLogs[0].topics[0], web3.utils.sha3('FalseClaim(bytes32)'), 'Should match the signature of the FalseClaim event.');
+    assert.equal(prosecutorTx.receipt.rawLogs[0].data, correctCommitmentRoot, 'defendantRoot should match.');
+
+    // Check balances to ensure that prosecutor received his stake and stake as a reward
+    let prosecutorBalanceAfter = await web3.eth.getBalance(prosecutor);
+    assert((BigInt(prosecutorBalanceAfter) - BigInt(prosecutorBalanceBefore)) * 10n >= BigInt(stake) * BigInt('18'), "The prosecutor must receive 2 stakes, to compare was used 90% of the amount because of the gas fees.");
+
+    let falsifierBalanceAfter = await web3.eth.getBalance(falsifier.address);
+    assert.equal(falsifierBalanceBefore - falsifierBalanceAfter, stake, 'Falsifier must transfered prosecutor stake to prosecutor.');
+
+    let verifierBalanceAfter = await web3.eth.getBalance(verifier.address);
+    assert.equal(verifierBalanceBefore - verifierBalanceAfter, stake, 'Verifier must transfered claimer stake to prosecutor.');
+
+    // Check dispute was deleted
+    dispute = await falsifier.getDispute(prosecutorRoot);
+    _checkDisputeRemoved(dispute);
+
+    // Check claim was deleted
+    claim = await verifier.getClaim(correctCommitmentRoot);
+    _checkClaimRemoved(claim);
+
+  });
+
+  it("Testing timing logic - not able to start dispute anymore", async () => {
+    const image = await challenger.computeImage(seed);
+    const imageHash = await challenger.computeImageHash(image);
+    const initialStateHash = await challenger.computeInitialStateHash(seed);
+
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
+    let disagreementPoint = 0;
+    let disputeDepth = 0;
+
+    const prosecutorRoot = await challenger.getCommitmentRoot(false); // incorrect root
+    let defender = accounts[1];
+    let prosecutor = accounts[2];
+
+    // Make claim
+    let defendandTx = await client.makeClaim(seed, image, correctCommitmentRoot, {from: defender, value: stake});
+
+    // Starting dispute
+    let prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false); // the start point is always 0, 0 - it's rootNode
+
+    let claim = await verifier.getClaim(correctCommitmentRoot);
+
+    // Jump in a point of time where there is no ability to start dispute anymore
+    await increaseTime(parseInt(claim.timeout / 2) + 1);
+
+    // Prosecutor tries to call newDispute with args: defendantRoot and prosecutorNode
+    try {
+      let prosecutorTx = await falsifier.newDispute(correctCommitmentRoot, prosecutorNode, {from: prosecutor, value: stake});
+      console.log("WARNING! Timing logic is broken");
+    } catch (e) {
+      assert.equal(e.reason, "There is not enough time left for a dispute.", "Incorrect revert reason.");
+    }
+
+    await increaseTime(parseInt(claim.timeout / 2) + 1);
+    defendandTx = await verifier.resolveTrueClaim(correctCommitmentRoot);
+    // Check logs
+    assert.equal(defendandTx.logs.length, 1, 'trigger one event'); // Probably we want to test also the case when callback failed and there is second event CallbackFailed
+    assert.equal(defendandTx.logs[0].event, 'TrueClaim', 'Should match event name.');
+    assert.equal(defendandTx.logs[0].args.claimKey, correctCommitmentRoot, 'claimKey should match.');
+
+    // Checking only verifier balance. Skipped checking the client balance, because the subgoal is to make unit test generic for any client implementation.
+    let balance = await web3.eth.getBalance(verifier.address);
+    assert.equal(balance, 0, "Verifier should send stake to Client. Make sure Client contract has receive function.");
+
+    // Checking the claim was deleted
+    claim = await verifier.getClaim(correctCommitmentRoot);
+    _checkClaimRemoved(claim);
+
+  });
+
 });
 
 function _checkLogsNewDispute(prosecutorTx, defendantRoot, prosecutorRoot) {
@@ -550,6 +693,30 @@ function _checkLogsReveal(defendandTx, prosecutorRoot, finalState) {
   assert.equal(defendandTx.logs[0].event, 'Reveal', 'Should match event name.');
   assert.equal(defendandTx.logs[0].args.prosecutorRoot, prosecutorRoot, 'prosecutorRoot should match.');
   //assert.deepEqual(defendandTx.logs[0].args.finalState, arraifyAsEthers(finalState), 'finalState should match.'); TODO
+}
+
+function _checkLogsProsecutorRespond(prosecutorTx, prosecutorRoot) {
+  assert.equal(prosecutorTx.logs.length, 1, 'trigger one event');
+  assert.equal(prosecutorTx.logs[0].event, "ProsecutorResponded", "Should match event name.");
+  assert.equal(prosecutorTx.logs[0].args.prosecutorRoot, prosecutorRoot, "prosecutorRoot should match.");
+}
+
+function _checkLogsDefendantRespond(defendandTx, prosecutorRoot) {
+  assert.equal(defendandTx.logs.length, 1, 'trigger one event');
+  assert.equal(defendandTx.logs[0].event, "DefendantResponded", "Should match event name.");
+  assert.equal(defendandTx.logs[0].args.prosecutorRoot, prosecutorRoot, "prosecutorRoot should match.");
+}
+
+function _checkLogsDefendantWon(defendandTx, prosecutorRoot) {
+  assert.equal(defendandTx.logs.length, 1, 'trigger one event');
+  assert.equal(defendandTx.logs[0].event, "DefendantWon", "Should match event name.");
+  assert.equal(defendandTx.logs[0].args.prosecutorRoot, prosecutorRoot, "prosecutorRoot should match.");
+}
+
+function _checkLogsBottomReached(defendandTx, prosecutorRoot) {
+  assert.equal(defendandTx.logs.length, 1, 'trigger one event');
+  assert.equal(defendandTx.logs[0].event, "BottomReached", "Should match event name.");
+  assert.equal(defendandTx.logs[0].args.prosecutorRoot, prosecutorRoot, "prosecutorRoot should match.");
 }
 
 function _checkClaimFalsifierStateChangesAfterNewDisputeCall(dispute, zeroNode, defendantRoot, prosecutor, prosecutorNode) {

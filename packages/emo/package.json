@@ -27,6 +27,6 @@
     "ethereumjs-abi": "^0.6.8",
     "ethereumjs-util": "^7.0.3",
     "ethereumjs-vm": "^4.2.0",
-    "solidity-parser-antlr": "^0.4.11"
+    "@solidity-parser/parser": "^0.13.2"
   }
 }

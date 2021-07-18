@@ -63,9 +63,9 @@ interface IClaimVerifier {
 contract ClaimVerifier is IClaimVerifier {
   mapping (bytes32 => Claim) public claims;
 
-  address public CLAIM_FALSIFIER;
-  IClient public CLIENT;
-  uint public MIN_TIMEOUT;
+  address public immutable CLAIM_FALSIFIER;
+  IClient public immutable CLIENT;
+  uint public immutable MIN_TIMEOUT;
 
   constructor(address claimFalsifier, address client, uint min_timeout)
   {

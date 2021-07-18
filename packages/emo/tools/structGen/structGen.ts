@@ -8,7 +8,7 @@ import {
     ElementaryTypeName,
     UserDefinedTypeName,
     ArrayTypeName
-} from 'solidity-parser-antlr';
+} from '@solidity-parser/parser';
 import { utils } from 'ethers';
 
 const getRandomIntInRange = (min, max) => {
@@ -128,5 +128,3 @@ function getStructGeneratorsForCode(code: string): any {
 }
 
 export = getStructGeneratorsForCode;
-
-

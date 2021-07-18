@@ -17,14 +17,14 @@ var __spreadArrays = (this && this.__spreadArrays) || function () {
             r[k] = a[j];
     return r;
 };
-var solidity_parser_antlr_1 = require("solidity-parser-antlr");
+var parser_1 = require("@solidity-parser/parser");
 var ethers_1 = require("ethers");
 var getRandomIntInRange = function (min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 function findAllStructDefinitions(ast) {
     var structDefs = [];
-    solidity_parser_antlr_1.visit(ast, {
+    parser_1.visit(ast, {
         StructDefinition: function (node) {
             structDefs.push(node);
         }
@@ -33,7 +33,7 @@ function findAllStructDefinitions(ast) {
 }
 function findStructDefinition(name, ast) {
     var def;
-    solidity_parser_antlr_1.visit(ast, {
+    parser_1.visit(ast, {
         StructDefinition: function (node) {
             if (node.name === name)
                 def = node;
@@ -119,7 +119,7 @@ function generateElementaryType(elementaryType, ast) {
     }
 }
 function getStructGeneratorsForCode(code) {
-    var ast = solidity_parser_antlr_1.parse(code, {});
+    var ast = parser_1.parse(code, {});
     return findAllStructDefinitions(ast).reduce(function (acc, cv) {
         var _a;
         return __assign(__assign({}, acc), (_a = {}, _a["gen" + cv.name] = function () { return generateStruct(cv, ast); }, _a));
