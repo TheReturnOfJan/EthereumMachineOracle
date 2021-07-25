@@ -29,6 +29,7 @@ interface IClaimFalsifier {
     Merkle.TreeNode defendantNode;
     Merkle.TreeNode prosecutorNode;
     DisputeState state;
+    uint deadLine;
   }
 
   event NewDispute (
@@ -105,13 +106,15 @@ contract ClaimFalsifier is IClaimFalsifier {
   uint public STAKE_SIZE;
   uint public MAX_TREE_DEPTH;
   uint public STEP_TIMEOUT;
+  uint public DISPUTE_TIMEOUT;
 
   constructor(uint stake_size, uint max_tree_depth, address client)
   {
     STAKE_SIZE = stake_size;
     MAX_TREE_DEPTH = max_tree_depth;
     STEP_TIMEOUT = IClient(client).getStepTimeout();
-    claimVerifier = new ClaimVerifier(address(this), client, (STEP_TIMEOUT * ((MAX_TREE_DEPTH + 2) * 2)) * 3);
+    DISPUTE_TIMEOUT = STEP_TIMEOUT * ((MAX_TREE_DEPTH + 2) * 2);
+    claimVerifier = new ClaimVerifier(address(this), client, DISPUTE_TIMEOUT * 3);
   }
 
   function getDispute (
@@ -139,6 +142,7 @@ contract ClaimFalsifier is IClaimFalsifier {
     dispute.prosecutor = msg.sender;
     dispute.lastActionTimestamp = block.timestamp;
     dispute.prosecutorNode = prosecutorNode;
+    dispute.deadLine = block.timestamp + DISPUTE_TIMEOUT;
 
     emit NewDispute(defendantRoot, prosecutorRoot);
   }
@@ -157,6 +161,7 @@ contract ClaimFalsifier is IClaimFalsifier {
     (bytes32 leftProofLeaf, bytes32 leftProofRoot, uint leftProofIndex) = Merkle.eval(proofLeft);
     (bytes32 rightProofLeaf, bytes32 rightProofRoot, uint rightProofIndex) = Merkle.eval(proofRight);
 
+    require(_enoughTimeForStep(dispute.lastActionTimestamp), "Time to make an action is expired. The dispute is won by an opponent.");
     require(Merkle.hash(defendantNode) == dispute.defendantRoot, "Defendant node does not match defendant root.");
     require(dispute.state == DisputeState.Opened, "Dispute state is not correct for this action.");
     require(leftProofIndex == 0, "Left index must be 0.");
@@ -185,6 +190,7 @@ contract ClaimFalsifier is IClaimFalsifier {
   {
     Dispute storage dispute = disputes[prosecutorRoot];
 
+    require(_enoughTimeForStep(dispute.lastActionTimestamp), "Time to make an action is expired. The dispute is won by an opponent.");
     require(dispute.state == DisputeState.ProsecutorTurn, "Dispute state is not correct for this action.");
     require(dispute.goRight ? Merkle.hash(node) == dispute.prosecutorNode.right : Merkle.hash(node) == dispute.prosecutorNode.left, "Brought node from the wrong side.");
 
@@ -202,6 +208,7 @@ contract ClaimFalsifier is IClaimFalsifier {
   {
     Dispute storage dispute = disputes[prosecutorRoot];
 
+    require(_enoughTimeForStep(dispute.lastActionTimestamp), "Time to make an action is expired. The dispute is won by an opponent.");
     require(dispute.state == DisputeState.DefendantTurn, "Dispute state is not correct for this action.");
     require(dispute.goRight ? Merkle.hash(node) == dispute.defendantNode.right : Merkle.hash(node) == dispute.defendantNode.left, "Brought node from the wrong side.");
 
@@ -236,6 +243,7 @@ contract ClaimFalsifier is IClaimFalsifier {
 
     (bytes32 leaf, bytes32 root, uint index) = Merkle.eval(proof);
 
+    require(_enoughTimeForStep(dispute.lastActionTimestamp), "Time to make an action is expired. The dispute is won by an opponent.");
     require(dispute.state == DisputeState.Bottom, "Dispute state is not correct for this action.");
     require(leaf == Machine.stateHash(state), "The submitted proof is not of the revealed state");
     require(root == dispute.defendantRoot, "The submitted proof root does not match defendant root");
@@ -262,6 +270,18 @@ contract ClaimFalsifier is IClaimFalsifier {
     } else {
       _prosecutorWins(prosecutorRoot);
     }
+  }
+
+  function removeStuckDispute (
+    bytes32 prosecutorRoot
+  ) external
+  {
+    require(disputes[prosecutorRoot].state != DisputeState.DoesNotExist, "Can not remove a non existent dispute.");
+    require(disputes[prosecutorRoot].deadLine + (MAX_TREE_DEPTH * STEP_TIMEOUT) < block.timestamp, "This dispute can not be removed at this moment");
+
+    delete disputes[prosecutorRoot];
+
+    payable(msg.sender).call{value: STAKE_SIZE / 2}("");
   }
 
   function _claimExists (
@@ -321,7 +341,6 @@ contract ClaimFalsifier is IClaimFalsifier {
   ) internal
   {
     Dispute storage dispute = disputes[prosecutorRoot];
-    // TODO: find workaround in a case revert "Claim doesn't exist"
     claimVerifier.falsifyClaim(dispute.defendantRoot, dispute.prosecutor);
     address payable prosecutor = payable(dispute.prosecutor);
     delete disputes[prosecutorRoot];
@@ -333,7 +352,7 @@ contract ClaimFalsifier is IClaimFalsifier {
   ) internal view returns (bool)
   {
     Dispute storage dispute = disputes[prosecutorRoot];
-    return dispute.lastActionTimestamp + STEP_TIMEOUT <= block.timestamp;
+    return dispute.deadLine <= block.timestamp;
   }
 
   function _defendantWinsOnTimeout (
@@ -342,6 +361,13 @@ contract ClaimFalsifier is IClaimFalsifier {
   {
     DisputeState state = disputes[prosecutorRoot].state;
     return state == DisputeState.ProsecutorTurn;
+  }
+
+  function _enoughTimeForStep (
+    uint lastActionTimestamp
+  ) internal view returns (bool)
+  {
+    return lastActionTimestamp + STEP_TIMEOUT >= block.timestamp;
   }
 
 }

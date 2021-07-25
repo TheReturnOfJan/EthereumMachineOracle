@@ -16,6 +16,7 @@ const DEFAULT_MAX_TREE_DEPTH = 16;
 const offchainRunnerInstance = new OffchainRunner.default(Machine._json);
 const structGenerator = StructGenerator(Machine.source);
 const seed = structGenerator.genSeed(); //(JAN: tool that ask dev to put nice seeds)
+console.log(seed);
 const challenger = new Challenger.default(offchainRunnerInstance, seed);
 
 
@@ -430,7 +431,7 @@ contract("EMO", async accounts => {
 
     // Step8. prosecutor wins by timeout.
     dispute = await falsifier.getDispute(correctCommitmentRoot);
-    const timeoutPoint = parseInt(dispute.lastActionTimestamp) + parseInt(DEFAULT_STEP_TIMEOUT);
+    const timeoutPoint = parseInt(dispute.deadLine);
     const blockTimestamp = (await web3.eth.getBlock('latest')).timestamp;
     if (blockTimestamp < timeoutPoint) {
       await increaseTime(timeoutPoint - blockTimestamp);
@@ -551,9 +552,11 @@ contract("EMO", async accounts => {
     // Check all variables
     const step_timeout = await client.getStepTimeout();
     const min_timeout = await verifier.MIN_TIMEOUT();
+    const dispute_timeout = await falsifier.DISPUTE_TIMEOUT();
 
     assert.equal(step_timeout, DEFAULT_STEP_TIMEOUT, "step timeout doesn't match.");
     assert.equal(min_timeout, (DEFAULT_STEP_TIMEOUT * (DEFAULT_MAX_TREE_DEPTH + 2) * 2 * 3), "min_timeout doesn't match.");
+    assert.equal(dispute_timeout, DEFAULT_STEP_TIMEOUT * ((DEFAULT_MAX_TREE_DEPTH + 2) * 2), "dispute_timeout doesn't match.");
 
     const image = await challenger.computeImage(seed);
     const imageHash = await challenger.computeImageHash(image);
@@ -584,7 +587,24 @@ contract("EMO", async accounts => {
     actionTimestamp = dispute.lastActionTimestamp;
     _checkClaimFalsifierStateChangesAfterNewDisputeCall(dispute, zeroNode, correctCommitmentRoot, prosecutor, prosecutorNode);
 
-    // Ensure that timeout can not be called while stepTimeout is not expired
+    // Imitating defendant doesn't reveal in a time
+    await increaseTime(DEFAULT_STEP_TIMEOUT + 1);
+
+    // Ensure that defendant is not able to act anymore after stepTimeout is expired
+    try {
+      let defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint); // it's 0, 0 - rootNode
+      let proofLeft = await challenger.getProofByIndex(0);
+      const finalStateIndex = (await challenger.finalState())[0];
+      let proofRight = await challenger.getProofByIndex(finalStateIndex);
+      let finalState = (await challenger.finalState())[1];
+
+      defendandTx = await falsifier.reveal(prosecutorRoot, defendantNode, proofLeft, proofRight, finalState, {from: defender});
+      console.log("WARNING! Timing logic is broken!");
+    } catch (e) {
+      assert.equal(e.reason, "Time to make an action is expired. The dispute is won by an opponent.", "Wrong revert reason.");
+    }
+
+    // Ensure that timeout can not be called while disputeTimeout is not expired
     try {
       prosecutorTx = await falsifier.timeout(prosecutorRoot, {from: prosecutor});
       console.log("Timing logic is broken");
@@ -592,15 +612,21 @@ contract("EMO", async accounts => {
       assert.equal(e.reason, "This dispute can not be timeout out at this moment", "Wrong reason for timeout");
     }
 
-    // Imitating defendant doesn't reveal in a time
-    await increaseTime(DEFAULT_STEP_TIMEOUT + 1);
-
-    // Main action. Prosecutor wins dispute by timeout
+    // Main action. Defendant is not able to act after he missed step time.
+    // Prosecutor has already won the dispute. But! he must to send tx (call timeout) at the same block as disputeTimeout is expired, because he has advantage against cheating, but he can lose it.
+    // The advantage is the dispute.deadLine and it can be as close as one block. What can bad defendant do? Bad-defendant can open newDispute against his own claim and win this dispute as a prosecutor (lose it as defendant) and try to call timeout before the good prosecutor did it, but he has the dispute.deadLine bigger than good prosecutor. So, good prosecutor MUST be the first and look close to his dispute.deadLine.
+    // Prosecutor waits his disputeTimeout and wins dispute by calling timeout.
 
     // Balances before falsifying by timeout
     let prosecutorBalanceBefore = await web3.eth.getBalance(prosecutor);
     let falsifierBalanceBefore = await web3.eth.getBalance(falsifier.address);
     let verifierBalanceBefore = await web3.eth.getBalance(verifier.address);
+
+    // Jumping to the right point in time
+    const currentBlockTime = parseInt((await web3.eth.getBlock('latest')).timestamp);
+    if (currentBlockTime < parseInt(dispute.deadLine)) {
+      await increaseTime(parseInt(dispute.deadLine) - currentBlockTime);
+    }
 
     prosecutorTx = await falsifier.timeout(prosecutorRoot, {from: prosecutor});
 
@@ -676,6 +702,238 @@ contract("EMO", async accounts => {
     // Checking the claim was deleted
     claim = await verifier.getClaim(correctCommitmentRoot);
     _checkClaimRemoved(claim);
+
+  });
+
+  it("Testing timing logic - Showcase when prosecutor can miss won case (a.k.a. frontrunning)", async () => {
+
+    const image = await challenger.getIncorrectImage(); // probably put seed as a parameter
+    const imageHash = await challenger.computeImageHash(image);
+    const initialStateHash = await challenger.computeInitialStateHash(seed);
+    const correctCommitmentRoot = await challenger.getCommitmentRoot();
+    let disagreementPoint = 0;
+    let disputeDepth = 0;
+
+    const defendantRoot = await challenger.getCommitmentRoot(false); // the claim initially was incorrect, so the root is incorrect too
+    const defender = accounts[1];
+    const prosecutor = accounts[2];
+    let defendandTx = await client.makeClaim(seed, image, defendantRoot, {from: defender, value: stake});
+    // Starting dispute
+    let prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
+    // Step1. prosecutor calls newDispute with args: defendantRoot and prosecutorNode
+    // PS. prosector should listen for NewClaim events and compute and check results to decide to open the dispute
+    let actionTimestamp;
+    let prosecutorTx = await falsifier.newDispute(defendantRoot, prosecutorNode, {from: prosecutor, value: stake});
+
+    _checkLogsNewDispute(prosecutorTx, defendantRoot, correctCommitmentRoot);
+
+    // Check ClaimFalsifier state changes
+    let dispute = await falsifier.getDispute(correctCommitmentRoot);
+
+    actionTimestamp = dispute.lastActionTimestamp;
+    _checkClaimFalsifierStateChangesAfterNewDisputeCall(dispute, zeroNode, defendantRoot, prosecutor, prosecutorNode);
+
+    // Step2. Defendant sees that there is dispute with correct values and he understands that he will lose it.
+    // Defendant should call reveal because otherway he will not be able to act and automatic lose by stepTimeout.
+    // Before defendant calls reveal, he calls newDispute against his own claim (values doesn't matter).
+
+    // Step 2.1 Defendant is trying to frontrun and calls newDispute with args: defendantRoot and prosecutorNode
+    const randomNode = await challenger.getDisagreementNode(4, 5);
+    const fakeRoot = web3.utils.keccak256(randomNode.left + randomNode.right.replace('0x',''));
+
+    defendandTx = await falsifier.newDispute(defendantRoot, randomNode, {from: defender, value: stake});
+    _checkLogsNewDispute(defendandTx, defendantRoot, fakeRoot);
+
+    // Check ClaimFalsifier state changes
+    let fakeDispute = await falsifier.getDispute(fakeRoot);
+    _checkClaimFalsifierStateChangesAfterNewDisputeCall(fakeDispute, zeroNode, defendantRoot, defender, randomNode);
+
+    // Step 2.2 Defendant calls reveal
+
+    let defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
+    let proofLeft = await challenger.getProofByIndex(0, false);
+    const finalStateIndex = (await challenger.finalState(false))[0];
+    let proofRight = await challenger.getProofByIndex(finalStateIndex, false);
+    const finalState = (await challenger.finalState(false))[1];
+
+    defendandTx = await falsifier.reveal(correctCommitmentRoot, defendantNode, proofLeft, proofRight, finalState, {from: defender});
+    // update
+    let goRight = _goRight(prosecutorNode, defendantNode);
+    disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
+    disputeDepth++;
+    _checkLogsReveal(defendandTx, correctCommitmentRoot, finalState);
+
+    // Check ClaimFalsifier state changes
+    dispute = await falsifier.getDispute(correctCommitmentRoot);
+    assert.deepEqual(dispute.defendantNode, arraifyAsEthers(defendantNode), "defendantNode should match.");
+    //assert(dispute.lastActionTimestamp > actionTimestamp, "timestamp should be updated.");
+    actionTimestamp = dispute.lastActionTimestamp;
+    assert.equal(dispute.state, 2, "Dispute state should be 'ProsecutorTurn'.");
+    assert.equal(BigInt(dispute.numberOfSteps), BigInt(proofRight.path), "numberOfSteps should be equal path to the final leave.");
+    assert.equal(dispute.goRight, goRight, "prosecutor and defendant nodes matched incorrect.");
+    assert.equal(dispute.disagreementPoint, disagreementPoint, "First disagreementPoint update.");
+    assert.equal(dispute.depth, disputeDepth, "We should go deeper into the tree to the next level, depth should be 1 now.");
+
+    // Challenge iterations
+    for (let i = 0; i < DEFAULT_MAX_TREE_DEPTH - 2; i++) {
+      //Step3. prosecutor calls prosecutorRespond with args: prosecutorRoot, prosecutorNode(next level, before calling check the dispute.goRight to define left or right node to use)
+      //PS. prosector should listen for Reveal event and also checks the timeout if the event doesn't appear in the
+      prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
+      prosecutorTx = await falsifier.prosecutorRespond(correctCommitmentRoot, prosecutorNode, {from: prosecutor});
+      _checkLogsProsecutorRespond(prosecutorTx, correctCommitmentRoot);
+
+      // Check ClaimFalsifier state changes
+      dispute = await falsifier.getDispute(correctCommitmentRoot);
+      assert.deepEqual(dispute.prosecutorNode, arraifyAsEthers(prosecutorNode), "prosecutorNode should be changed.");
+      //assert(dispute.lastActionTimestamp > actionTimestamp, "timestamp should be updated.");
+      actionTimestamp = dispute.lastActionTimestamp;
+      assert.equal(dispute.state, 3, "should be 'DefendantTurn'.");
+
+      //Step4. defendant calls defendantRespond with args: prosecutorRoot, defendantNode
+      defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
+      defendandTx = await falsifier.defendantRespond(correctCommitmentRoot, defendantNode, {from: defender});
+      // update
+      goRight = _goRight(prosecutorNode, defendantNode);
+      disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
+      disputeDepth++;
+      _checkLogsDefendantRespond(defendandTx, correctCommitmentRoot);
+
+      // Check ClaimFalsifier state changes
+      dispute = await falsifier.getDispute(correctCommitmentRoot);
+      assert.deepEqual(dispute.defendantNode, arraifyAsEthers(defendantNode), "defendantNode should be changed.");
+      //assert(dispute.lastActionTimestamp > actionTimestamp, "timestamp should be updated.");
+      actionTimestamp = dispute.lastActionTimestamp;
+      assert.equal(dispute.goRight, goRight, "prosecutor and defendant nodes matched incorrect.");
+      assert.equal(dispute.disagreementPoint, disagreementPoint, "disagreementPoint update.");
+      assert.equal(dispute.depth, disputeDepth, "We should go deeper into the tree to the next level.");
+      assert.equal(dispute.state, 2, "should be 'ProsecutorTurn'.");
+    }
+
+    //Step5. prosecutor respond last time
+    prosecutorNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint);
+    prosecutorTx = await falsifier.prosecutorRespond(correctCommitmentRoot, prosecutorNode, {from: prosecutor});
+    _checkLogsProsecutorRespond(prosecutorTx, correctCommitmentRoot);
+
+    // Check ClaimFalsifier state changes
+    dispute = await falsifier.getDispute(correctCommitmentRoot);
+    assert.deepEqual(dispute.prosecutorNode, arraifyAsEthers(prosecutorNode), "prosecutorNode should be changed.");
+    //assert(dispute.lastActionTimestamp > actionTimestamp, "timestamp should be updated.");
+    actionTimestamp = dispute.lastActionTimestamp;
+    assert.equal(dispute.state, 3, "should be 'DefendantTurn'.");
+
+    //Step6. defendant respond last time
+    defendantNode = await challenger.getDisagreementNode(disputeDepth, disagreementPoint, false);
+    defendandTx = await falsifier.defendantRespond(correctCommitmentRoot, defendantNode, {from: defender});
+    // update
+    goRight = _goRight(prosecutorNode, defendantNode);
+    disagreementPoint = _updateDisagreementPoint(disagreementPoint, goRight);
+    disputeDepth++;
+    _checkLogsBottomReached(defendandTx, correctCommitmentRoot);
+
+    // Check ClaimFalsifier state changes
+    dispute = await falsifier.getDispute(correctCommitmentRoot);
+    assert.deepEqual(dispute.defendantNode, arraifyAsEthers(defendantNode), "defendantNode should be changed.");
+    //assert(dispute.lastActionTimestamp > actionTimestamp, "timestamp should be updated.");
+    actionTimestamp = dispute.lastActionTimestamp;
+    assert.equal(dispute.goRight, goRight, "left nodes of the prosecutor and defendant nodes should be equal.");
+    assert.equal(dispute.firstDivergentStateHash, goRight ? defendantNode.right : defendantNode.left, "The divergent state hash.");
+    assert.equal(dispute.disagreementPoint, disagreementPoint, "Last disagreementPoint update.");
+    assert.equal(dispute.depth, DEFAULT_MAX_TREE_DEPTH, "We reached the bottom. The depth should be equal MAX_TREE_DEPTH.");
+    assert.equal(dispute.state, 4, "should be 'Bottom'.");
+
+    // Step7. defendant reveals bottom (but as the claim was incorrect he is not able to do it)
+    const proof = await challenger.getProofByIndex(disagreementPoint - 1, false);
+    const defendantStateBeforeDisagreementPoint = await challenger.getStateByIndex(disagreementPoint - 1, false);
+    try {
+      defendandTx = await falsifier.defendantRevealBottom(correctCommitmentRoot, proof, defendantStateBeforeDisagreementPoint, {from: defender});
+    } catch (e) {
+      assert.equal(e.reason, "Next computed state is not the one commited to.");
+    }
+
+    // Step8. prosecutor should win by timeout when dispute deadLine expires.
+    // Jumping to right point in time
+    dispute = await falsifier.getDispute(correctCommitmentRoot);
+    const timeoutPoint = parseInt(dispute.deadLine);
+    const blockTimestamp = (await web3.eth.getBlock('latest')).timestamp;
+    if (blockTimestamp < timeoutPoint) {
+      await increaseTime(timeoutPoint - blockTimestamp);
+    }
+
+    // Balances before frontrunning
+    const prosecutorBalanceBefore = await web3.eth.getBalance(prosecutor);
+    const defendantBalanceBefore = await web3.eth.getBalance(defender);
+    const falsifierBalanceBefore = await web3.eth.getBalance(falsifier.address);
+    const verifierBalanceBefore = await web3.eth.getBalance(verifier.address);
+
+    // Step 8.1. Defendant with his fake dispute is trying to be first in a block
+    try {
+      defendandTx = await falsifier.timeout(fakeRoot, {from: defender, gasPrice: 500000000000});
+
+      prosecutorTx = await falsifier.timeout(correctCommitmentRoot, {from: prosecutor, gasPrice: 300000000000});
+
+    } catch (e) {
+      assert.equal(e.reason, "Claim does not exist.", "Incorrect revert reason.");
+    }
+
+    // Balances after frontrunning
+    const prosecutorBalanceAfter = await web3.eth.getBalance(prosecutor);
+    const defendantBalanceAfter = await web3.eth.getBalance(defender);
+    const falsifierBalanceAfter = await web3.eth.getBalance(falsifier.address);
+    const verifierBalanceAfter = await web3.eth.getBalance(verifier.address);
+
+    // Frontrunning was successfull - checking balances:
+    assert.equal(verifierBalanceBefore - verifierBalanceAfter, stake, "Verifier should send stake to winner.");
+    assert.equal(falsifierBalanceBefore - falsifierBalanceAfter, stake, "Falsifier should send stake to winner.");
+    assert(prosecutorBalanceBefore > prosecutorBalanceAfter, "Prosecutor loses frontrunning.");
+    assert(defendantBalanceBefore < defendantBalanceAfter, "Defendant wins frontrunning.");
+
+    // Check logs
+    assert.equal(defendandTx.receipt.rawLogs.length, 1, 'trigger one event');
+    assert.equal(defendandTx.receipt.rawLogs[0].address, verifier.address, "Make sure that the event is from ClaimVerifier.");
+    assert.equal(defendandTx.receipt.rawLogs[0].topics[0], web3.utils.sha3('FalseClaim(bytes32)'), 'Should match the signature of the FalseClaim event.');
+    assert.equal(defendandTx.receipt.rawLogs[0].data, defendantRoot, 'defendantRoot should match.');
+
+    // Check fake dispute was deleted
+    fakeDispute = await falsifier.getDispute(fakeRoot);
+    _checkDisputeRemoved(fakeDispute);
+
+    // Check claim was deleted
+    claim = await verifier.getClaim(defendantRoot);
+    _checkClaimRemoved(claim);
+
+    // Check dispute was not deleted
+    dispute = await falsifier.getDispute(correctCommitmentRoot);
+    assert(dispute.lastActionTimestamp > 0, "Prosecutors dispute is still here and there is no way to remove it.");
+    // The current implementation allows such cases when the dispute (e.i. _prosecutorWins)
+    // is stuck forever along with the stake in ClaimFalsifier.
+    // This issue should be solved. But it is hard to find right way to solve it. Why?
+    // The naive solution is to allow prosecutors that are in such situation to withdraw stake and remove dispute.
+    // If we do it, than prosecutors can choose the time to do it. And this case will snowball another issues.
+    // The another issue is that bad actors are able to make fake claim and open a lot of disputes
+    // with the computationRoots that are correct for another seeds (claims), and if only prosecutors are able (or have economic incentives)
+    // to remove "stucked disputes" in a time they want, than they can make incorrect claims that can't be falsified,
+    // because noone is able to call newDispute with the correct computationRoot (revert "Dispute already exists.")
+    // and bad actor just waits timeouts for new claims, resolves true claims (that for real are false claims)
+    // and only after that removes those disputes and even receives stakes. So, in this game there is only profits and no loses for bad actors.
+    // We can improve "naive solution" in a way that anyone can remove "stuck dispute" for example if it wasn't removed in a dispute.deadLine + MAX_TREE_DEPTH * STEP_TIMEOUT
+    // and receive stake. Also, claim.timeout should be updated to cover such cases.
+    // If so, bad actors will act the same way, but they will not be able to push incorrect claims.
+    // But, they still don't lose anything and can spam EMO with "stuck disputes" and be the first who receive the stake.
+    // So, it's still vulnerable. What if we punish such behaviour and for example will give back only half of stake.
+    // It will definitely reduce attempts, but good actors who was frontrunned also are punished and have disinitiative to act.
+
+    // In the current commit we just add a function removeStuckDispute in ClaimFalsifier that
+    // will give opportunity to anyone to remove stuck dispute and receive half of the stake.
+    await increaseTime(DEFAULT_MAX_TREE_DEPTH * DEFAULT_STEP_TIMEOUT);
+    prosecutorTx = await falsifier.removeStuckDispute(correctCommitmentRoot, {from: prosecutor});
+
+    // Check dispute was deleted
+    dispute = await falsifier.getDispute(correctCommitmentRoot);
+    _checkDisputeRemoved(dispute);
+
+    // Next commit will include solution that allows prosecutors to timeout and "Claim does not exist"
+    // revert will be handled in try catch statement, and this will allow prosecutor to receive the whole stake, if
+    // he acts immidiately. Also, next commit will include another test case that will show how defendant can try to cheat.
 
   });
 
