@@ -103,6 +103,7 @@ contract ClaimFalsifier is IClaimFalsifier {
 
   IClaimVerifier public override claimVerifier;
   mapping (bytes32 => Dispute) public disputes;
+  mapping (address => uint) public stuckStakes;
   uint public STAKE_SIZE;
   uint public MAX_TREE_DEPTH;
   uint public STEP_TIMEOUT;
@@ -282,6 +283,14 @@ contract ClaimFalsifier is IClaimFalsifier {
     delete disputes[prosecutorRoot];
 
     payable(msg.sender).call{value: STAKE_SIZE / 2}("");
+    payable(address(claimVerifier.getClient())).call{value: STAKE_SIZE / 2}("");
+  }
+
+  function requestStuckStake () external {
+    require(stuckStakes[msg.sender] > 0, "Prosecutor does not have stuck stake.");
+    uint amount = (((STAKE_SIZE / 2) / MAX_TREE_DEPTH) * (MAX_TREE_DEPTH - ((block.timestamp - stuckStakes[msg.sender]) / STEP_TIMEOUT))) + STAKE_SIZE / 2;
+    stuckStakes[msg.sender] = 0;
+    payable(msg.sender).call{value: amount}("");
   }
 
   function _claimExists (
@@ -341,10 +350,18 @@ contract ClaimFalsifier is IClaimFalsifier {
   ) internal
   {
     Dispute storage dispute = disputes[prosecutorRoot];
-    claimVerifier.falsifyClaim(dispute.defendantRoot, dispute.prosecutor);
-    address payable prosecutor = payable(dispute.prosecutor);
-    delete disputes[prosecutorRoot];
-    prosecutor.call{value: STAKE_SIZE}("");
+    try claimVerifier.falsifyClaim(dispute.defendantRoot, dispute.prosecutor) {
+      address payable prosecutor = payable(dispute.prosecutor);
+      delete disputes[prosecutorRoot];
+      prosecutor.call{value: STAKE_SIZE}("");
+    } catch Error(string memory reason) {
+      require(
+        keccak256(abi.encode(reason)) == keccak256(abi.encode("Claim does not exist.")),
+        "Not legal reason for dispute to be recognized as a stuck one."
+      );
+      stuckStakes[dispute.prosecutor] = dispute.deadLine;
+      delete disputes[prosecutorRoot];
+    }
   }
 
   function _canTimeout (

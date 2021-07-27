@@ -16,7 +16,6 @@ const DEFAULT_MAX_TREE_DEPTH = 16;
 const offchainRunnerInstance = new OffchainRunner.default(Machine._json);
 const structGenerator = StructGenerator(Machine.source);
 const seed = structGenerator.genSeed(); //(JAN: tool that ask dev to put nice seeds)
-console.log(seed);
 const challenger = new Challenger.default(offchainRunnerInstance, seed);
 
 
@@ -29,7 +28,7 @@ contract("EMO", async accounts => {
 
   beforeEach(async () => {
       client = await Client.new(DEFAULT_MAX_TREE_DEPTH, DEFAULT_STEP_TIMEOUT); // -> this is not client-generic
-      falsifier = await ClaimFalsifier.new(DEFAULT_STAKE_SIZE, DEFAULT_MAX_TREE_DEPTH, client.address);
+      falsifier = await ClaimFalsifier.new(DEFAULT_STAKE_SIZE, DEFAULT_MAX_TREE_DEPTH, client.address, {gas: 7500000});
       let verifierAddress = await falsifier.claimVerifier();
       stake = await falsifier.STAKE_SIZE();
       verifier = await ClaimVerifier.at(verifierAddress);
@@ -856,7 +855,7 @@ contract("EMO", async accounts => {
     const timeoutPoint = parseInt(dispute.deadLine);
     const blockTimestamp = (await web3.eth.getBlock('latest')).timestamp;
     if (blockTimestamp < timeoutPoint) {
-      await increaseTime(timeoutPoint - blockTimestamp);
+      await increaseTime(timeoutPoint - blockTimestamp + 1);
     }
 
     // Balances before frontrunning
@@ -866,14 +865,10 @@ contract("EMO", async accounts => {
     const verifierBalanceBefore = await web3.eth.getBalance(verifier.address);
 
     // Step 8.1. Defendant with his fake dispute is trying to be first in a block
-    try {
-      defendandTx = await falsifier.timeout(fakeRoot, {from: defender, gasPrice: 500000000000});
 
-      prosecutorTx = await falsifier.timeout(correctCommitmentRoot, {from: prosecutor, gasPrice: 300000000000});
+    defendandTx = await falsifier.timeout(fakeRoot, {from: defender, gasPrice: 500000000000});
 
-    } catch (e) {
-      assert.equal(e.reason, "Claim does not exist.", "Incorrect revert reason.");
-    }
+    prosecutorTx = await falsifier.timeout(correctCommitmentRoot, {from: prosecutor, gasPrice: 300000000000});
 
     // Balances after frontrunning
     const prosecutorBalanceAfter = await web3.eth.getBalance(prosecutor);
@@ -901,39 +896,214 @@ contract("EMO", async accounts => {
     claim = await verifier.getClaim(defendantRoot);
     _checkClaimRemoved(claim);
 
-    // Check dispute was not deleted
-    dispute = await falsifier.getDispute(correctCommitmentRoot);
-    assert(dispute.lastActionTimestamp > 0, "Prosecutors dispute is still here and there is no way to remove it.");
-    // The current implementation allows such cases when the dispute (e.i. _prosecutorWins)
-    // is stuck forever along with the stake in ClaimFalsifier.
-    // This issue should be solved. But it is hard to find right way to solve it. Why?
-    // The naive solution is to allow prosecutors that are in such situation to withdraw stake and remove dispute.
-    // If we do it, than prosecutors can choose the time to do it. And this case will snowball another issues.
-    // The another issue is that bad actors are able to make fake claim and open a lot of disputes
-    // with the computationRoots that are correct for another seeds (claims), and if only prosecutors are able (or have economic incentives)
-    // to remove "stucked disputes" in a time they want, than they can make incorrect claims that can't be falsified,
-    // because noone is able to call newDispute with the correct computationRoot (revert "Dispute already exists.")
-    // and bad actor just waits timeouts for new claims, resolves true claims (that for real are false claims)
-    // and only after that removes those disputes and even receives stakes. So, in this game there is only profits and no loses for bad actors.
-    // We can improve "naive solution" in a way that anyone can remove "stuck dispute" for example if it wasn't removed in a dispute.deadLine + MAX_TREE_DEPTH * STEP_TIMEOUT
-    // and receive stake. Also, claim.timeout should be updated to cover such cases.
-    // If so, bad actors will act the same way, but they will not be able to push incorrect claims.
-    // But, they still don't lose anything and can spam EMO with "stuck disputes" and be the first who receive the stake.
-    // So, it's still vulnerable. What if we punish such behaviour and for example will give back only half of stake.
-    // It will definitely reduce attempts, but good actors who was frontrunned also are punished and have disinitiative to act.
-
-    // In the current commit we just add a function removeStuckDispute in ClaimFalsifier that
-    // will give opportunity to anyone to remove stuck dispute and receive half of the stake.
-    await increaseTime(DEFAULT_MAX_TREE_DEPTH * DEFAULT_STEP_TIMEOUT);
-    prosecutorTx = await falsifier.removeStuckDispute(correctCommitmentRoot, {from: prosecutor});
-
-    // Check dispute was deleted
+    // Check initial dispute was deleted
     dispute = await falsifier.getDispute(correctCommitmentRoot);
     _checkDisputeRemoved(dispute);
 
-    // Next commit will include solution that allows prosecutors to timeout and "Claim does not exist"
-    // revert will be handled in try catch statement, and this will allow prosecutor to receive the whole stake, if
-    // he acts immidiately. Also, next commit will include another test case that will show how defendant can try to cheat.
+    prosecutorTx = await falsifier.requestStuckStake({from: prosecutor});
+
+    const prosecutorBalanceAfterRequest = await web3.eth.getBalance(prosecutor);
+    assert(prosecutorBalanceAfterRequest - prosecutorBalanceAfter > stake * 0.95, "Prosecutor should receive stuck stake.");
+
+  });
+
+  it("Testing timing logic - fake claim -> stuckDispute with correctRoot for another claim", async () => {
+
+    const initialSeed = structGenerator.genSeed();
+    const fakeSeed = structGenerator.genSeed();
+
+    const initialChallenger = new Challenger.default(offchainRunnerInstance, initialSeed);
+    const fakeChallenger = new Challenger.default(offchainRunnerInstance, fakeSeed);
+
+    // STEP1. Bad actor makes fakeClaim, for example with correct values
+
+    // values for fake seed
+    const fakeImage = await offchainRunnerInstance.run(fakeSeed);
+    const fakeImageHash = await fakeChallenger.computeImageHash(fakeImage);
+    const fakeCorrectCommitmentRoot = await fakeChallenger.getCommitmentRoot();
+    let disagreementPoint = 0;
+    let disputeDepth = 0;
+
+    // values for initial seed
+    const initialCorrectCommitmentRoot = await initialChallenger.getCommitmentRoot();
+    const initialIncorrectCommitmentRoot = await initialChallenger.getCommitmentRoot(false);
+    const initialIncorrectImage = await initialChallenger.getIncorrectImage();
+
+    // Actors
+    const badActorAcc1 = accounts[1];
+    const badActorAcc2 = accounts[2];
+    const goodActor = accounts[3];
+
+    let badActor1Tx = await client.makeClaim(fakeSeed, fakeImage, fakeCorrectCommitmentRoot, {from: badActorAcc1, value: stake});
+
+    // STEP2. Bad actor starts dispute against his own fake claim (e.i. correct) using the computation root from the initial seed
+    let initialNode = await initialChallenger.getDisagreementNode(disputeDepth, disagreementPoint);
+
+    let badActor2Tx = await falsifier.newDispute(fakeCorrectCommitmentRoot, initialNode, {from: badActorAcc2, value: stake});
+
+    _checkLogsNewDispute(badActor2Tx, fakeCorrectCommitmentRoot, initialCorrectCommitmentRoot);
+
+    // Check ClaimFalsifier state changes
+    let dispute = await falsifier.getDispute(initialCorrectCommitmentRoot);
+
+    _checkClaimFalsifierStateChangesAfterNewDisputeCall(dispute, zeroNode, fakeCorrectCommitmentRoot, badActorAcc2, initialNode);
+
+    // STEP3. Fake dispute state is Opened now, so no other actions are needed.
+    // badActorAcc1 don't do anything and after STEP_TIMEOUT is expired badActorAcc2 won this dispute.
+    // And after dispute timeout is expired badActorAcc2 can timeout, but he wouldn't do it.
+    // And badActorAcc1 will just resolve true claim. If anyone tries to dispute, badActorAcc1
+    // will win it, because the claim (fake one) is correct.
+
+    // Jumping in a timepoint where badActorAcc1 is able to resolve true claim
+    const min_timeout = await verifier.MIN_TIMEOUT();
+    await increaseTime(parseInt(min_timeout));
+
+    badActor1Tx = await verifier.resolveTrueClaim(fakeCorrectCommitmentRoot, {from: badActorAcc1});
+
+    // After this badActorAcc1 received his stake, the only locked stake is by badActorAcc2 for the dispute
+
+    // STEP4. Now bad actor is able to make claim with incorrect results
+    badActor1Tx = await client.makeClaim(initialSeed, initialIncorrectImage, initialIncorrectCommitmentRoot, {from: badActorAcc1, value: stake});
+
+
+    // STEP5. Good actor is not able to open dispute with correct result while fake dispute
+    // is not removed from ClaimFalsifier.
+    try {
+      let goodActorTx = await falsifier.newDispute(initialIncorrectCommitmentRoot, initialNode, {from: goodActor, value: stake});
+      console.log("WARNING! Something broken");
+    } catch (e) {
+      assert.equal(e.reason, "Dispute already exists.", "Wrong revert reason.");
+    }
+    // Previously, before removeStuckDispute function was added at this point we can do
+    // almost nothing to falsify the incorrect claim. (It's not 100% True, we can try
+    // to build an array of computation steps in a way for example, that the terminal
+    // state is incorrect and on top of the state list build a tree and try to dispute
+    // with incorrect values but with the goal to reach the bottom and falsify the claim.
+    // But now challenger doesn't have such functionality - probably worth TODO, and average user
+    // is not able to deal with such cases).
+    // The Pros here was that this "stuck dispute" means also "stuck stake" and bad actor
+    // loses the stake with no way to receive it. And now bad actor is able to receive stake
+    // and in this way he has more possibilities to spam EMO. This is the Cons because we
+    // want good actors to be able not to stuck if they were frontrunned, and also to have free storage.
+
+    //STEP6. Try to use removeStuckDispute
+    goodActorTx = await falsifier.removeStuckDispute(initialCorrectCommitmentRoot, {from: goodActor});
+
+    dispute = await falsifier.getDispute(initialCorrectCommitmentRoot);
+    _checkDisputeRemoved(dispute);
+
+    //STEP7. good actor starts newDispute
+    goodActorTx = await falsifier.newDispute(initialIncorrectCommitmentRoot, initialNode, {from: goodActor, value: stake});
+
+    dispute = await falsifier.getDispute(initialCorrectCommitmentRoot);
+    _checkClaimFalsifierStateChangesAfterNewDisputeCall(dispute, zeroNode, initialIncorrectCommitmentRoot, goodActor, initialNode);
+
+    // Now we skip the whole challenge game - it's obviously that good actor will successfully
+    // win the dispute and falsify claim. We replace it like defendant didn't respond at time.
+
+    // Jump in point of time where we can falsify dispute
+    let now = (await web3.eth.getBlock('latest')).timestamp;
+    await increaseTime(parseInt(dispute.deadLine) - parseInt(now) + 1);
+
+    goodActorTx = await falsifier.timeout(initialCorrectCommitmentRoot, {from: goodActor});
+    dispute = await falsifier.getDispute(initialCorrectCommitmentRoot);
+    _checkDisputeRemoved(dispute);
+
+    let claim = await verifier.getClaim(initialIncorrectCommitmentRoot);
+    _checkClaimRemoved(claim);
+
+    // After all ClaimFalsifier changes the bad actors wouldn't behave like above.
+    // Let's imitate their behaviour now when they have requestStuckStake function.
+    // Repeating all the process above, but making initial claim right after fake dispute creation.
+
+    const initialSeed2 = structGenerator.genSeed();
+    const fakeSeed2 = structGenerator.genSeed();
+
+    const initialChallenger2 = new Challenger.default(offchainRunnerInstance, initialSeed2);
+    const fakeChallenger2 = new Challenger.default(offchainRunnerInstance, fakeSeed2);
+
+    // values for fake seed
+    const fakeImage2 = await offchainRunnerInstance.run(fakeSeed2);
+    const fakeImageHash2 = await fakeChallenger2.computeImageHash(fakeImage2);
+    const fakeCorrectCommitmentRoot2 = await fakeChallenger2.getCommitmentRoot();
+
+    // values for initial seed
+    const initialCorrectCommitmentRoot2 = await initialChallenger2.getCommitmentRoot();
+    const initialIncorrectCommitmentRoot2 = await initialChallenger2.getCommitmentRoot(false);
+    const initialIncorrectImage2 = await initialChallenger2.getIncorrectImage();
+
+    //STEP1. make fake claim
+    badActor1Tx = await client.makeClaim(fakeSeed2, fakeImage2, fakeCorrectCommitmentRoot2, {from: badActorAcc1, value: stake});
+
+    // STEP2. Bad actor starts dispute against his own fake claim (e.i. correct) using the computation root from the initial seed
+    let initialNode2 = await initialChallenger2.getDisagreementNode(disputeDepth, disagreementPoint);
+
+    badActor2Tx = await falsifier.newDispute(fakeCorrectCommitmentRoot2, initialNode2, {from: badActorAcc2, value: stake});
+
+    _checkLogsNewDispute(badActor2Tx, fakeCorrectCommitmentRoot2, initialCorrectCommitmentRoot2);
+
+    // Check ClaimFalsifier state changes
+    dispute = await falsifier.getDispute(initialCorrectCommitmentRoot2);
+
+    _checkClaimFalsifierStateChangesAfterNewDisputeCall(dispute, zeroNode, fakeCorrectCommitmentRoot2, badActorAcc2, initialNode2);
+
+    // STEP3. The same, but bad actor makes his initial claim immidiately
+    badActor1Tx = await client.makeClaim(initialSeed2, initialIncorrectImage2, initialIncorrectCommitmentRoot2, {from: badActorAcc1, value: stake});
+
+    // STEP4. Now there is no way for good actor to removeStuckDispute until its deadLine + (MAX_TREE_DEPTH * STEP_TIMEOUT)
+    // But the bad actor is able to wait deadLine and then timeout his fake - this will allow him to receive 2 stakes, but
+    // the stake that is for initial claim he will lose if good actor opens dispute. But if he will not timeout
+    // after deadLine he will be losing his stake partially for fake dispute each STEP_TIMEOUT and he has no idea, if
+    // someone tries to falsify. For good actors it doesn't matter what bad actor will do,
+    // good actor should watch for FalseClaim event and check if fakeCorrectCommitmentRoot matches claimKey -> call newDispute,
+    // if no event until deadLine + (MAX_TREE_DEPTH * STEP_TIMEOUT) -> removeStuckDispute -> newDispute
+
+    now = (await web3.eth.getBlock('latest')).timestamp;
+    await increaseTime((parseInt(dispute.deadLine) + parseInt(DEFAULT_MAX_TREE_DEPTH * DEFAULT_STEP_TIMEOUT)) - parseInt(now) + 1);
+    goodActorTx = await falsifier.removeStuckDispute(initialCorrectCommitmentRoot2, {from: goodActor});
+    goodActorTx = await falsifier.newDispute(initialIncorrectCommitmentRoot2, initialNode2, {from: goodActor, value: stake});
+
+    // Again we assume that bad actor doesn't try to defendant, he lose dispute anyway
+    // Jumping at timeout time
+    dispute = await falsifier.getDispute(initialCorrectCommitmentRoot2);
+    now = (await web3.eth.getBlock('latest')).timestamp;
+    await increaseTime(parseInt(dispute.deadLine) - parseInt(now) + 1);
+
+    // Make sure that bad actor is not able to resolve true claim at this point of time
+    try {
+      badActor2Tx = await verifier.resolveTrueClaim(initialIncorrectCommitmentRoot2, {from: badActorAcc2});
+      console.log("WARNING! Timing logic is broken.");
+    } catch (e) {
+      assert.equal(e.reason, "Too early to resolve.", "Wrong revert reason.");
+    }
+
+    // Falsify claim
+    goodActorTx = await falsifier.timeout(initialCorrectCommitmentRoot2, {from: goodActor});
+
+    // Check dispute was deleted
+    dispute = await falsifier.getDispute(initialCorrectCommitmentRoot2);
+    _checkDisputeRemoved(dispute);
+
+    // Check claim was deleted
+    claim = await verifier.getClaim(initialIncorrectCommitmentRoot2);
+    _checkClaimRemoved(claim);
+
+    // Bad actor have already lost at this point 2 stakes and he wants just to receive 1 stake
+    // So, he resolves true dispute
+    claim = await verifier.getClaim(fakeCorrectCommitmentRoot2);
+    now = (await web3.eth.getBlock('latest')).timestamp;
+    await increaseTime(parseInt(claim.timeout) + parseInt(claim.claimTime) - parseInt(now) + 1);
+
+    badActor1Tx = await verifier.resolveTrueClaim(fakeCorrectCommitmentRoot2, {from: badActorAcc1});
+
+    // Check logs
+    assert.equal(badActor1Tx.logs.length, 1, 'trigger one event'); // Probably we want to test also the case when callback failed and there is second event CallbackFailed
+    assert.equal(badActor1Tx.logs[0].event, 'TrueClaim', 'Should match event name.');
+    assert.equal(badActor1Tx.logs[0].args.claimKey, fakeCorrectCommitmentRoot2, 'claimKey should match.');
+
+    // Check claim was deleted
+    claim = await verifier.getClaim(fakeCorrectCommitmentRoot2);
+    _checkClaimRemoved(claim);
 
   });
 

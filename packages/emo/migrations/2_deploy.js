@@ -19,7 +19,7 @@ module.exports = (deployer, network, accounts) => {
     await deployer.link(Machine, [Verifier, Falsifier, Client]);
     await deployer.link(Merkle, Falsifier);
     const client = await deployer.deploy(Client, max_tree_depth, step_timeout);
-    const falsifier = await deployer.deploy(Falsifier, stake_size, max_tree_depth, client.address);
+    const falsifier = await deployer.deploy(Falsifier, stake_size, max_tree_depth, client.address, {gas: 7500000});
     const verifierAddress = await falsifier.claimVerifier();
     const verifier = await Verifier.at(verifierAddress);
     console.log('Deployed ClaimVerifier at: ' + verifier.address);
