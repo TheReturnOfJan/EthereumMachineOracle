@@ -1,0 +1,17 @@
+version: "3"
+services:
+  challenger:
+    container_name: challenger
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    depends_on:
+      - redis
+  redis:
+    container_name: redis
+    image: redis
+    volumes:
+      - ./redis:/data
+    expose:
+      - 6379
+    command: ["sh", "-c", "redis-server --appendonly \"yes\""]
