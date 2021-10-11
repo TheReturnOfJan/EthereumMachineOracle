@@ -58,6 +58,14 @@ interface IClaimFalsifier {
     bytes32 prosecutorRoot
   );
 
+  event ProsecutorWon (
+    bytes32 prosecutorRoot
+  );
+
+  event DisputeRemoved (
+    bytes32 prosecutorRoot
+  );
+
   function claimVerifier()
     external view returns (IClaimVerifier);
 
@@ -270,6 +278,7 @@ contract ClaimFalsifier is IClaimFalsifier {
       emit DefendantWon(prosecutorRoot);
     } else {
       _prosecutorWins(prosecutorRoot);
+      emit ProsecutorWon(prosecutorRoot);
     }
   }
 
@@ -284,6 +293,8 @@ contract ClaimFalsifier is IClaimFalsifier {
 
     payable(msg.sender).call{value: STAKE_SIZE / 2}("");
     payable(address(claimVerifier.getClient())).call{value: STAKE_SIZE / 2}("");
+
+    emit DisputeRemoved(prosecutorRoot);
   }
 
   function requestStuckStake () external {
