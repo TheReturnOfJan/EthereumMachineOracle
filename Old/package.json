@@ -4,7 +4,8 @@
   "description": "Ethereum Machine Oracle",
   "main": "index.js",
   "scripts": {
-
+    "test": "mocha",
+    "build": "waffle .waffle.json"
   },
   "repository": {
     "type": "git",
@@ -17,9 +18,15 @@
   },
   "homepage": "https://github.com/leapdao/EthereumMachineOracle#readme",
   "devDependencies": {
-    
+    "chai": "^4.2.0",
+    "ethereum-waffle": "^3.0.0-beta.1",
+    "lerna": "^3.22.1",
+    "mocha": "^7.1.2"
   },
   "dependencies": {
-    
+    "ethereumjs-abi": "^0.6.8",
+    "ethereumjs-util": "^7.0.3",
+    "ethereumjs-vm": "^4.2.0",
+    "solidity-parser-antlr": "^0.4.11"
   }
 }

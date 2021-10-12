@@ -6,10 +6,25 @@ It aims to be generic, capable of verifying computations done on any abstract ma
 
 This is a spiritual successor to [solEVM enforcer](https://github.com/leapdao/solEVM-enforcer).
 
-It should provide developers with an easy way to verify computations done on an abstract machine in their own smart contracts.
+## Developer guide
 
-## Dependencies
+### Requirements
 
-Truffle.
+You have to have the [solidity command line compiler](https://solidity.readthedocs.io/en/v0.6.2/installing-solidity.html#binary-packages) (version >= 0.6.0) installed on your machine.
+
+### Commands
+
+To typecheck run:
+
+```./typecheck.sh```
+
+Setup:
+```npm install```
+
+Build:
+```MACHINE=ExampleMachine.sol node build.js```
+
+Test:
+```MACHINE=ExampleMachine.sol npm run test```
 
 ## [Explainer](https://hackmd.io/DXVvXgFKRQae8Sy3ncrJ3g?view)

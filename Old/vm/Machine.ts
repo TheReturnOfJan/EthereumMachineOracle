@@ -47,7 +47,15 @@ class Machine {
         const accountAddress = privateToAddress(accountPk);
         const account = new Account({ balance: 1e18 });
         await putAccount(this.vm, accountAddress, account);
-        this.machineAddress = await deployContract(this.vm, accountPk, this.machineArtifact.evm.bytecode.object);
+
+        let bytecode: any = null;
+        if (this.machineArtifact.bytecode) {
+            bytecode = this.machineArtifact.bytecode;
+        } else if (this.machineArtifact.evm && this.machineArtifact.evm.bytecode) {
+            bytecode = this.machineArtifact.evm.bytecode.object;
+        }
+
+        this.machineAddress = await deployContract(this.vm, accountPk, bytecode.replace('0x', ''));
         this.account = accountAddress;
     }
 
