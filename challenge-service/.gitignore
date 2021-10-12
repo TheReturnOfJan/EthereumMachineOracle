@@ -1,0 +1,4 @@
+node_modules/
+keystore/keystore.json
+config/config.json
+redis

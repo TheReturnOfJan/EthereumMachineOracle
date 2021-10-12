@@ -1,0 +1,13 @@
+{
+  "chainId": "paste instead this string number = the chain id where emo was deployed",
+  "providerUrl": "paste provider url",
+  "redis": {
+    "options": {
+      "host": "redis",
+      "port": 6379
+    }
+  },
+  "claimVerifierAddress": "",
+  "claimFalsifierAddress": "",
+  "machineABI": []
+}
